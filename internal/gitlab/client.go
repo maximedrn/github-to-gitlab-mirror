@@ -22,11 +22,7 @@ type Client struct {
 // For gitlab.com, pass "gitlab.com" as host. For self-managed instances,
 // pass the full host (e.g. "gitlab.example.com").
 func NewClient(host, token string) (*Client, error) {
-	baseURL := "https://" + host
-	if baseURL == "https://gitlab.com" {
-		baseURL = "https://gitlab.com"
-	}
-	client, err := gl.NewClient(token, gl.WithBaseURL(baseURL))
+	client, err := gl.NewClient(token, gl.WithBaseURL("https://"+host))
 	if err != nil {
 		return nil, fmt.Errorf("create gitlab client: %w", err)
 	}
@@ -34,9 +30,12 @@ func NewClient(host, token string) (*Client, error) {
 }
 
 // NewClientWithURL creates a new Client with a custom base URL (used in tests).
-func NewClientWithURL(token, baseURL string) *Client {
-	client, _ := gl.NewClient(token, gl.WithBaseURL(baseURL))
-	return &Client{client: client}
+func NewClientWithURL(token, baseURL string) (*Client, error) {
+	client, err := gl.NewClient(token, gl.WithBaseURL(baseURL))
+	if err != nil {
+		return nil, fmt.Errorf("create gitlab client: %w", err)
+	}
+	return &Client{client: client}, nil
 }
 
 // ResolveGroup fetches group details by full path (e.g. "my-group/subgroup").
@@ -56,7 +55,10 @@ func (c *Client) EnsureProject(ctx context.Context, group GroupInfo, name string
 	if err == nil {
 		return nil
 	}
-	if resp != nil && resp.StatusCode != 404 {
+	if resp == nil {
+		return fmt.Errorf("get project %q: %w", fullPath, err)
+	}
+	if resp.StatusCode != 404 {
 		return fmt.Errorf("get project %q: %w", fullPath, err)
 	}
 

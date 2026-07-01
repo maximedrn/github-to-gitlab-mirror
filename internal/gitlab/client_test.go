@@ -25,7 +25,10 @@ func TestResolveGroup(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := gitlab.NewClientWithURL("test-token", srv.URL)
+	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
+	if err != nil {
+		t.Fatalf("NewClientWithURL: %v", err)
+	}
 	info, err := client.ResolveGroup(ctx, "my-group/subgroup")
 	if err != nil {
 		t.Fatalf("ResolveGroup: %v", err)
@@ -58,9 +61,12 @@ func TestEnsureProject_CreatesWhenNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := gitlab.NewClientWithURL("test-token", srv.URL)
+	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
+	if err != nil {
+		t.Fatalf("NewClientWithURL: %v", err)
+	}
 	group := gitlab.GroupInfo{ID: 42, FullPath: "my-group"}
-	err := client.EnsureProject(ctx, group, "my-repo", true)
+	err = client.EnsureProject(ctx, group, "my-repo", true)
 	if err != nil {
 		t.Fatalf("EnsureProject: %v", err)
 	}
@@ -84,9 +90,12 @@ func TestEnsureProject_SkipsWhenExists(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := gitlab.NewClientWithURL("test-token", srv.URL)
+	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
+	if err != nil {
+		t.Fatalf("NewClientWithURL: %v", err)
+	}
 	group := gitlab.GroupInfo{ID: 42, FullPath: "my-group"}
-	err := client.EnsureProject(ctx, group, "my-repo", false)
+	err = client.EnsureProject(ctx, group, "my-repo", false)
 	if err != nil {
 		t.Fatalf("EnsureProject: %v", err)
 	}
@@ -107,8 +116,11 @@ func TestSetDefaultBranch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := gitlab.NewClientWithURL("test-token", srv.URL)
-	err := client.SetDefaultBranch(ctx, "my-group/my-repo", "develop")
+	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
+	if err != nil {
+		t.Fatalf("NewClientWithURL: %v", err)
+	}
+	err = client.SetDefaultBranch(ctx, "my-group/my-repo", "develop")
 	if err != nil {
 		t.Fatalf("SetDefaultBranch: %v", err)
 	}
