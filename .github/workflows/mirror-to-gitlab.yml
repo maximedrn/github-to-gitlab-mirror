@@ -1,0 +1,29 @@
+name: Mirror GitHub to GitLab
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Synchroniser tous les dépôts vers GitLab
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_GROUP: ${{ vars.GITLAB_GROUP }}
+          GITLAB_HOST: ${{ vars.GITLAB_HOST }}
+        run: bash scripts/mirror-repos.sh
