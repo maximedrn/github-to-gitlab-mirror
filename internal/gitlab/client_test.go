@@ -13,7 +13,8 @@ import (
 func TestResolveGroup(t *testing.T) {
 	ctx := context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v4/groups/my-group/subgroup" {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":        42,
@@ -45,7 +46,8 @@ func TestEnsureProject_CreatesWhenNotFound(t *testing.T) {
 	ctx := context.Background()
 	created := false
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" && r.URL.Path == "/api/v4/projects/my-group/my-repo" {
 			w.WriteHeader(404)
 			json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
@@ -78,7 +80,8 @@ func TestEnsureProject_CreatesWhenNotFound(t *testing.T) {
 func TestEnsureProject_SkipsWhenExists(t *testing.T) {
 	ctx := context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" && r.URL.Path == "/api/v4/projects/my-group/my-repo" {
 			json.NewEncoder(w).Encode(map[string]interface{}{"id": 1, "name": "my-repo"})
 			return
@@ -104,7 +107,8 @@ func TestEnsureProject_SkipsWhenExists(t *testing.T) {
 func TestSetDefaultBranch(t *testing.T) {
 	ctx := context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PUT" && r.URL.Path == "/api/v4/projects/my-group/my-repo" {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":             1,

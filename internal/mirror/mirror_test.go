@@ -68,7 +68,9 @@ func TestMirrorClonePush(t *testing.T) {
 	// Mirror clone
 	client := mirror.New()
 	cloneDir := filepath.Join(dir, "clone.git")
-	if err := client.MirrorClone(ctx, "file://"+src, "", "", cloneDir); err != nil {
+	if err := client.MirrorClone(
+		ctx, "file://"+src, "", "", cloneDir,
+	); err != nil {
 		t.Fatalf("MirrorClone: %v", err)
 	}
 

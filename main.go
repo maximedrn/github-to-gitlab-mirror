@@ -62,7 +62,7 @@ func main() {
 		}
 	}
 
-	fmt.Println("────────────────────────────────────")
+	fmt.Println("------------------------------------")
 	fmt.Printf("Synced: %d | Skipped: %d | Failed: %d\n", synced, skipped, failed)
 
 	if failed > 0 {

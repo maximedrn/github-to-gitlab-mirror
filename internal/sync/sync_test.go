@@ -12,11 +12,13 @@ import (
 )
 
 type fakeGitHub struct {
-	repos []github.Repo
+	repos []github.Repository
 	err   error
 }
 
-func (f *fakeGitHub) ListRepos(ctx context.Context) ([]github.Repo, error) {
+func (f *fakeGitHub) ListRepos(
+	ctx context.Context,
+) ([]github.Repository, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -24,20 +26,24 @@ func (f *fakeGitHub) ListRepos(ctx context.Context) ([]github.Repo, error) {
 }
 
 type fakeGitLab struct {
-	group            gitlab.GroupInfo
-	groupErr         error
-	createdProjects  map[string]bool
-	getErr           map[string]error
+	group           gitlab.GroupInfo
+	groupErr        error
+	createdProjects map[string]bool
+	getErr          map[string]error
 }
 
-func (f *fakeGitLab) ResolveGroup(ctx context.Context, path string) (gitlab.GroupInfo, error) {
+func (f *fakeGitLab) ResolveGroup(
+	ctx context.Context, path string,
+) (gitlab.GroupInfo, error) {
 	if f.groupErr != nil {
 		return gitlab.GroupInfo{}, f.groupErr
 	}
 	return f.group, nil
 }
 
-func (f *fakeGitLab) EnsureProject(ctx context.Context, group gitlab.GroupInfo, name string, private bool) error {
+func (f *fakeGitLab) EnsureProject(
+	ctx context.Context, group gitlab.GroupInfo, name string, private bool,
+) error {
 	key := group.FullPath + "/" + name
 	if err, ok := f.getErr[key]; ok {
 		return err
@@ -48,7 +54,9 @@ func (f *fakeGitLab) EnsureProject(ctx context.Context, group gitlab.GroupInfo, 
 	return nil
 }
 
-func (f *fakeGitLab) SetDefaultBranch(ctx context.Context, projectPath, branch string) error {
+func (f *fakeGitLab) SetDefaultBranch(
+	ctx context.Context, projectPath, branch string,
+) error {
 	return nil
 }
 
@@ -56,18 +64,24 @@ type fakeMirror struct {
 	refs map[string]map[string]string // url -> refs
 }
 
-func (f *fakeMirror) GetRefs(ctx context.Context, url, user, token string) (map[string]string, error) {
+func (f *fakeMirror) GetRefs(
+	ctx context.Context, url, user, token string,
+) (map[string]string, error) {
 	if refs, ok := f.refs[url]; ok {
 		return refs, nil
 	}
 	return map[string]string{}, nil
 }
 
-func (f *fakeMirror) MirrorClone(ctx context.Context, url, user, token, dest string) error {
+func (f *fakeMirror) MirrorClone(
+	ctx context.Context, url, user, token, dest string,
+) error {
 	return nil
 }
 
-func (f *fakeMirror) MirrorPush(ctx context.Context, repoDir, url, user, token string) error {
+func (f *fakeMirror) MirrorPush(
+	ctx context.Context, repoDir, url, user, token string,
+) error {
 	return nil
 }
 
@@ -75,7 +89,7 @@ func TestSync_SkipsWhenRefsIdentical(t *testing.T) {
 	ctx := context.Background()
 
 	gh := &fakeGitHub{
-		repos: []github.Repo{
+		repos: []github.Repository{
 			{FullName: "user/repo1", Private: false, DefaultBranch: "main"},
 		},
 	}
@@ -87,13 +101,15 @@ func TestSync_SkipsWhenRefsIdentical(t *testing.T) {
 
 	mirror := &fakeMirror{
 		refs: map[string]map[string]string{
-			"https://github.com/user/repo1.git":      {"refs/heads/main": "abc123"},
-			"https://gitlab.com/my-group/repo1.git":   {"refs/heads/main": "abc123"},
+			"https://github.com/user/repo1.git":     {"refs/heads/main": "abc123"},
+			"https://gitlab.com/my-group/repo1.git": {"refs/heads/main": "abc123"},
 		},
 	}
 
 	syncer := sync.New(gh, gl, mirror, 2)
-	results := syncer.Sync(ctx, "my-group", "x-access-token", "gl-token", "gitlab.com")
+	results := syncer.Sync(
+		ctx, "my-group", "x-access-token", "gl-token", "gitlab.com",
+	)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -110,7 +126,7 @@ func TestSync_SyncsWhenRefsDiffer(t *testing.T) {
 	ctx := context.Background()
 
 	gh := &fakeGitHub{
-		repos: []github.Repo{
+		repos: []github.Repository{
 			{FullName: "user/repo1", Private: true, DefaultBranch: "develop"},
 		},
 	}
@@ -122,8 +138,9 @@ func TestSync_SyncsWhenRefsDiffer(t *testing.T) {
 
 	mirror := &fakeMirror{
 		refs: map[string]map[string]string{
-			"https://github.com/user/repo1.git":      {"refs/heads/main": "abc123", "refs/heads/develop": "def456"},
-			"https://gitlab.com/my-group/repo1.git":   {"refs/heads/main": "abc123"},
+			"https://github.com/user/repo1.git":
+			{"refs/heads/main": "abc123", "refs/heads/develop": "def456"},
+			"https://gitlab.com/my-group/repo1.git": {"refs/heads/main": "abc123"},
 		},
 	}
 
@@ -145,7 +162,7 @@ func TestSync_CollectsFailures(t *testing.T) {
 	ctx := context.Background()
 
 	gh := &fakeGitHub{
-		repos: []github.Repo{
+		repos: []github.Repository{
 			{FullName: "user/repo1", Private: false, DefaultBranch: "main"},
 			{FullName: "user/repo2", Private: false, DefaultBranch: "main"},
 		},
@@ -161,9 +178,9 @@ func TestSync_CollectsFailures(t *testing.T) {
 
 	mirror := &fakeMirror{
 		refs: map[string]map[string]string{
-			"https://github.com/user/repo1.git":    {"refs/heads/main": "abc123"},
+			"https://github.com/user/repo1.git":     {"refs/heads/main": "abc123"},
 			"https://gitlab.com/my-group/repo1.git": {},
-			"https://github.com/user/repo2.git":    {"refs/heads/main": "abc123"},
+			"https://github.com/user/repo2.git":     {"refs/heads/main": "abc123"},
 		},
 	}
 

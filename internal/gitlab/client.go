@@ -39,7 +39,9 @@ func NewClientWithURL(token, baseURL string) (*Client, error) {
 }
 
 // ResolveGroup fetches group details by full path (e.g. "my-group/subgroup").
-func (c *Client) ResolveGroup(ctx context.Context, groupPath string) (GroupInfo, error) {
+func (c *Client) ResolveGroup(
+	ctx context.Context, groupPath string,
+) (GroupInfo, error) {
 	g, _, err := c.client.Groups.GetGroup(groupPath, nil, gl.WithContext(ctx))
 	if err != nil {
 		return GroupInfo{}, fmt.Errorf("resolve group %q: %w", groupPath, err)
@@ -47,11 +49,16 @@ func (c *Client) ResolveGroup(ctx context.Context, groupPath string) (GroupInfo,
 	return GroupInfo{ID: g.ID, FullPath: g.FullPath}, nil
 }
 
-// EnsureProject checks if a project exists in the given group and creates it if not found.
-func (c *Client) EnsureProject(ctx context.Context, group GroupInfo, name string, private bool) error {
+// EnsureProject checks if a project exists in the given group
+// and creates it if not found.
+func (c *Client) EnsureProject(
+	ctx context.Context, group GroupInfo, name string, private bool,
+) error {
 	fullPath := group.FullPath + "/" + name
 
-	_, resp, err := c.client.Projects.GetProject(fullPath, nil, gl.WithContext(ctx))
+	_, resp, err := c.client.Projects.GetProject(
+		fullPath, nil, gl.WithContext(ctx),
+	)
 	if err == nil {
 		return nil
 	}
@@ -79,7 +86,9 @@ func (c *Client) EnsureProject(ctx context.Context, group GroupInfo, name string
 }
 
 // SetDefaultBranch updates the default branch for a project.
-func (c *Client) SetDefaultBranch(ctx context.Context, projectPath, branch string) error {
+func (c *Client) SetDefaultBranch(
+	ctx context.Context, projectPath, branch string,
+) error {
 	_, _, err := c.client.Projects.EditProject(projectPath, &gl.EditProjectOptions{
 		DefaultBranch: gl.Ptr(branch),
 	}, gl.WithContext(ctx))

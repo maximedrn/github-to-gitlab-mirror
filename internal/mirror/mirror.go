@@ -18,7 +18,9 @@ func New() *Client {
 	return &Client{}
 }
 
-func (c *Client) GetRefs(ctx context.Context, url, user, token string) (map[string]string, error) {
+func (c *Client) GetRefs(
+	ctx context.Context, url, user, token string,
+) (map[string]string, error) {
 	r := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{url},
@@ -41,7 +43,9 @@ func (c *Client) GetRefs(ctx context.Context, url, user, token string) (map[stri
 	return result, nil
 }
 
-func (c *Client) MirrorClone(ctx context.Context, url, user, token, dest string) error {
+func (c *Client) MirrorClone(
+	ctx context.Context, url, user, token, dest string,
+) error {
 	var auth transport.AuthMethod
 	if user != "" {
 		auth = &http.BasicAuth{Username: user, Password: token}
@@ -57,7 +61,9 @@ func (c *Client) MirrorClone(ctx context.Context, url, user, token, dest string)
 	return nil
 }
 
-func (c *Client) MirrorPush(ctx context.Context, repoDir, url, user, token string) error {
+func (c *Client) MirrorPush(
+	ctx context.Context, repoDir, url, user, token string,
+) error {
 	repo, err := git.PlainOpen(repoDir)
 	if err != nil {
 		return fmt.Errorf("open repo: %w", err)

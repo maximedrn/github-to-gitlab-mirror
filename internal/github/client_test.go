@@ -16,13 +16,17 @@ func TestListRepos_ReturnsAllPages(t *testing.T) {
 	page := 0
 
 	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv = httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/user/repos" {
 			w.WriteHeader(404)
 			return
 		}
 		if r.URL.Query().Get("affiliation") != "owner,organization_member" {
-			t.Errorf("expected affiliation=owner,organization_member, got %s", r.URL.Query().Get("affiliation"))
+			t.Errorf(
+				"expected affiliation=owner,organization_member, got %s",
+				r.URL.Query().Get("affiliation"),
+			)
 		}
 
 		page++

@@ -3,13 +3,14 @@ package github
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	gh "github.com/google/go-github/v72/github"
 	"golang.org/x/oauth2"
 )
 
-type Repo struct {
+type Repository struct {
 	FullName      string
 	Private       bool
 	DefaultBranch string
@@ -20,30 +21,40 @@ type Client struct {
 }
 
 func NewClient(token string) *Client {
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	tc := oauth2.NewClient(context.Background(), ts)
-	return &Client{client: gh.NewClient(tc)}
+	var tokenSource oauth2.TokenSource = oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: token},
+	)
+	var httpClient *http.Client = oauth2.NewClient(
+		context.Background(), tokenSource,
+	)
+	return &Client{client: gh.NewClient(httpClient)}
 }
 
 func NewClientWithURL(token, baseURL string) *Client {
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	tc := oauth2.NewClient(context.Background(), ts)
-	client := gh.NewClient(tc)
-	client.BaseURL, _ = url.Parse(baseURL + "/")
-	return &Client{client: client}
+	var tokenSource oauth2.TokenSource = oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: token},
+	)
+	var httpClient *http.Client = oauth2.NewClient(
+		context.Background(), tokenSource,
+	)
+	var githubClient *gh.Client = gh.NewClient(httpClient)
+	githubClient.BaseURL, _ = url.Parse(baseURL + "/")
+	return &Client{client: githubClient}
 }
 
-func (c *Client) ListRepos(ctx context.Context) ([]Repo, error) {
-	var all []Repo
-	opts := &gh.RepositoryListByAuthenticatedUserOptions{
+func (client *Client) ListRepos(context context.Context) ([]Repository, error) {
+	var repositories []Repository
+	options := &gh.RepositoryListByAuthenticatedUserOptions{
 		Affiliation: "owner,organization_member",
 		ListOptions: gh.ListOptions{PerPage: 100},
 	}
 
 	for {
-		repos, resp, err := c.client.Repositories.ListByAuthenticatedUser(ctx, opts)
-		if err != nil {
-			return nil, fmt.Errorf("list repos: %w", err)
+		repos, response, error := client.client.Repositories.ListByAuthenticatedUser(
+			context, options,
+		)
+		if error != nil {
+			return nil, fmt.Errorf("List repos: %w", error)
 		}
 
 		for _, r := range repos {
@@ -51,18 +62,18 @@ func (c *Client) ListRepos(ctx context.Context) ([]Repo, error) {
 			if r.GetDefaultBranch() != "" {
 				branch = r.GetDefaultBranch()
 			}
-			all = append(all, Repo{
+			repositories = append(repositories, Repository{
 				FullName:      r.GetFullName(),
 				Private:       r.GetPrivate(),
 				DefaultBranch: branch,
 			})
 		}
 
-		if resp.NextPage == 0 {
+		if response.NextPage == 0 {
 			break
 		}
-		opts.Page = resp.NextPage
+		options.Page = response.NextPage
 	}
 
-	return all, nil
+	return repositories, nil
 }
