@@ -19,12 +19,6 @@ func New() *Client {
 }
 
 func (c *Client) GetRefs(ctx context.Context, url, user, token string) (map[string]string, error) {
-	ep, err := transport.NewEndpoint(url)
-	if err != nil {
-		return nil, fmt.Errorf("parse endpoint: %w", err)
-	}
-	ep.User = user
-
 	r := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{url},
@@ -69,16 +63,15 @@ func (c *Client) MirrorPush(ctx context.Context, repoDir, url, user, token strin
 		return fmt.Errorf("open repo: %w", err)
 	}
 
-	remote, err := repo.CreateRemote(&config.RemoteConfig{
-		Name: "mirror-target",
-		URLs: []string{url},
-	})
+	remote, err := repo.Remote("mirror-target")
 	if err != nil {
-		existing, err2 := repo.Remote("mirror-target")
-		if err2 != nil {
-			return fmt.Errorf("create remote: %w", err)
+		remote, err = repo.CreateRemote(&config.RemoteConfig{
+			Name: "mirror-target",
+			URLs: []string{url},
+		})
+		if err != nil {
+			return fmt.Errorf("setup mirror-target remote: %w", err)
 		}
-		remote = existing
 	}
 
 	var auth transport.AuthMethod
