@@ -6,225 +6,353 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/martmull/github-to-gitlab-mirror/internal/github"
-	"github.com/martmull/github-to-gitlab-mirror/internal/gitlab"
-	"github.com/martmull/github-to-gitlab-mirror/internal/sync"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/github"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/gitlab"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/sync"
 )
 
+// fakeGitHub is a stub implementation of sync.GitHubClient that returns
+// a fixed list of repositories or a fixed error.
 type fakeGitHub struct {
-	repos []github.Repository
-	err   error
+	repositories []github.Repository
+	listError    error
 }
 
-func (f *fakeGitHub) ListRepos(
-	ctx context.Context,
+// ListRepositories returns either the stubbed error or the stubbed
+// repositories.
+func (fake *fakeGitHub) ListRepositories(
+	requestContext context.Context,
 ) ([]github.Repository, error) {
-	if f.err != nil {
-		return nil, f.err
+	if fake.listError != nil {
+		return nil, fake.listError
 	}
-	return f.repos, nil
+	return fake.repositories, nil
 }
 
+// fakeGitLab is a stub implementation of sync.GitLabClient that records
+// created projects and exposes hooks to force errors.
 type fakeGitLab struct {
-	group           gitlab.GroupInfo
-	groupErr        error
-	createdProjects map[string]bool
-	getErr          map[string]error
+	group              gitlab.GroupInfo
+	resolveGroupError  error
+	createdProjects    map[string]bool
+	ensureProjectError map[string]error
 }
 
-func (f *fakeGitLab) ResolveGroup(
-	ctx context.Context, path string,
+// ResolveGroup returns either the stubbed error or the stubbed group.
+func (fake *fakeGitLab) ResolveGroup(
+	requestContext context.Context, path string,
 ) (gitlab.GroupInfo, error) {
-	if f.groupErr != nil {
-		return gitlab.GroupInfo{}, f.groupErr
+	if fake.resolveGroupError != nil {
+		return gitlab.GroupInfo{}, fake.resolveGroupError
 	}
-	return f.group, nil
+	return fake.group, nil
 }
 
-func (f *fakeGitLab) EnsureProject(
-	ctx context.Context, group gitlab.GroupInfo, name string, private bool,
+// EnsureProject records that the project was created unless a matching
+// stubbed error is registered for the "group/name" key.
+func (fake *fakeGitLab) EnsureProject(
+	requestContext context.Context,
+	group gitlab.GroupInfo,
+	name string,
+	private bool,
 ) error {
-	key := group.FullPath + "/" + name
-	if err, ok := f.getErr[key]; ok {
-		return err
+	var key string = group.FullPath + "/" + name
+	var registeredError error
+	var exists bool
+	registeredError, exists = fake.ensureProjectError[key]
+	if exists {
+		return registeredError
 	}
-	if f.createdProjects != nil {
-		f.createdProjects[key] = true
+	if fake.createdProjects != nil {
+		fake.createdProjects[key] = true
 	}
 	return nil
 }
 
-func (f *fakeGitLab) SetDefaultBranch(
-	ctx context.Context, projectPath, branch string,
+// SetDefaultBranch is a no-op used only to satisfy the interface.
+func (fake *fakeGitLab) SetDefaultBranch(
+	requestContext context.Context, projectPath, branch string,
 ) error {
 	return nil
 }
 
+// fakeMirror is a stub implementation of sync.MirrorClient that returns
+// pre-registered ref maps and no-op clone/push operations.
 type fakeMirror struct {
-	refs map[string]map[string]string // url -> refs
+	referencesByURL map[string]map[string]string
 }
 
-func (f *fakeMirror) GetRefs(
-	ctx context.Context, url, user, token string,
+// GetRefs returns the pre-registered ref map for the given URL, or an
+// empty map when no map is registered.
+func (fake *fakeMirror) GetRefs(
+	requestContext context.Context, remoteURL, user, token string,
 ) (map[string]string, error) {
-	if refs, ok := f.refs[url]; ok {
-		return refs, nil
+	var references map[string]string
+	var exists bool
+	references, exists = fake.referencesByURL[remoteURL]
+	if exists {
+		return references, nil
 	}
 	return map[string]string{}, nil
 }
 
-func (f *fakeMirror) MirrorClone(
-	ctx context.Context, url, user, token, dest string,
+// MirrorClone is a no-op used only to satisfy the interface.
+func (fake *fakeMirror) MirrorClone(
+	requestContext context.Context,
+	remoteURL, user, token, destinationDirectory string,
 ) error {
 	return nil
 }
 
-func (f *fakeMirror) MirrorPush(
-	ctx context.Context, repoDir, url, user, token string,
+// MirrorPush is a no-op used only to satisfy the interface.
+func (fake *fakeMirror) MirrorPush(
+	requestContext context.Context,
+	repositoryDirectory, remoteURL, user, token string,
 ) error {
 	return nil
 }
 
-func TestSync_SkipsWhenRefsIdentical(t *testing.T) {
-	ctx := context.Background()
+// TestSync_SkipsWhenRefsIdentical verifies that the syncer reports
+// StatusSkipped and does not create the destination project when the
+// GitHub and GitLab remotes advertise identical refs.
+func TestSync_SkipsWhenRefsIdentical(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	gh := &fakeGitHub{
-		repos: []github.Repository{
-			{FullName: "user/repo1", Private: false, DefaultBranch: "main"},
+	var githubStub *fakeGitHub = &fakeGitHub{
+		repositories: []github.Repository{
+			{
+				FullName:      "user/repo1",
+				Private:       false,
+				DefaultBranch: "main",
+			},
 		},
 	}
 
-	gl := &fakeGitLab{
-		group:           gitlab.GroupInfo{ID: 42, FullPath: "my-group"},
+	var gitlabStub *fakeGitLab = &fakeGitLab{
+		group: gitlab.GroupInfo{
+			ID:       42,
+			FullPath: "my-group",
+		},
 		createdProjects: make(map[string]bool),
 	}
 
-	mirror := &fakeMirror{
-		refs: map[string]map[string]string{
-			"https://github.com/user/repo1.git":     {"refs/heads/main": "abc123"},
-			"https://gitlab.com/my-group/repo1.git": {"refs/heads/main": "abc123"},
+	var mirrorStub *fakeMirror = &fakeMirror{
+		referencesByURL: map[string]map[string]string{
+			"https://github.com/user/repo1.git": {
+				"refs/heads/main": "abc123",
+			},
+			"https://gitlab.com/my-group/repo1.git": {
+				"refs/heads/main": "abc123",
+			},
 		},
 	}
 
-	syncer := sync.New(gh, gl, mirror, 2)
-	results := syncer.Sync(
-		ctx, "my-group", "x-access-token", "gl-token", "gitlab.com",
+	var syncer *sync.Syncer = sync.New(
+		githubStub,
+		gitlabStub,
+		mirrorStub,
+		2,
+	)
+	var results []sync.SyncResult = syncer.Sync(
+		requestContext,
+		"my-group",
+		"x-access-token",
+		"gl-token",
+		"gitlab.com",
 	)
 
 	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+		test.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].Status != sync.StatusSkipped {
-		t.Errorf("expected StatusSkipped, got %v", results[0].Status)
+		test.Errorf("Expected StatusSkipped, got %v", results[0].Status)
 	}
-	if len(gl.createdProjects) > 0 {
-		t.Error("no projects should have been created")
+	if len(gitlabStub.createdProjects) > 0 {
+		test.Error("Expected no projects to be created")
 	}
 }
 
-func TestSync_SyncsWhenRefsDiffer(t *testing.T) {
-	ctx := context.Background()
+// TestSync_SyncsWhenRefsDiffer verifies that the syncer reports
+// StatusSynced and creates the destination project when the GitHub and
+// GitLab remotes advertise different refs.
+func TestSync_SyncsWhenRefsDiffer(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	gh := &fakeGitHub{
-		repos: []github.Repository{
-			{FullName: "user/repo1", Private: true, DefaultBranch: "develop"},
+	var githubStub *fakeGitHub = &fakeGitHub{
+		repositories: []github.Repository{
+			{
+				FullName:      "user/repository-1",
+				Private:       true,
+				DefaultBranch: "develop",
+			},
 		},
 	}
 
-	gl := &fakeGitLab{
-		group:           gitlab.GroupInfo{ID: 42, FullPath: "my-group"},
+	var gitlabStub *fakeGitLab = &fakeGitLab{
+		group: gitlab.GroupInfo{
+			ID:       42,
+			FullPath: "my-group",
+		},
 		createdProjects: make(map[string]bool),
 	}
 
-	mirror := &fakeMirror{
-		refs: map[string]map[string]string{
-			"https://github.com/user/repo1.git":
-			{"refs/heads/main": "abc123", "refs/heads/develop": "def456"},
-			"https://gitlab.com/my-group/repo1.git": {"refs/heads/main": "abc123"},
+	var mirrorStub *fakeMirror = &fakeMirror{
+		referencesByURL: map[string]map[string]string{
+			"https://github.com/user/repository-1.git": {
+				"refs/heads/main":    "abc123",
+				"refs/heads/develop": "def456",
+			},
+			"https://gitlab.com/my-group/repository-1.git": {
+				"refs/heads/main": "abc123",
+			},
 		},
 	}
 
-	syncer := sync.New(gh, gl, mirror, 2)
-	results := syncer.Sync(ctx, "my-group", "gh-token", "gl-token", "gitlab.com")
+	var syncer *sync.Syncer = sync.New(
+		githubStub,
+		gitlabStub,
+		mirrorStub,
+		2,
+	)
+	var results []sync.SyncResult = syncer.Sync(
+		requestContext,
+		"my-group",
+		"gh-token",
+		"gl-token",
+		"gitlab.com",
+	)
 
 	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+		test.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].Status != sync.StatusSynced {
-		t.Errorf("expected StatusSynced, got %v", results[0].Status)
+		test.Errorf("Expected StatusSynced, got %v", results[0].Status)
 	}
-	if !gl.createdProjects["my-group/repo1"] {
-		t.Error("expected repo1 to be created")
+	if !gitlabStub.createdProjects["my-group/repository-1"] {
+		test.Error("Expected repository-1 to be created")
 	}
 }
 
-func TestSync_CollectsFailures(t *testing.T) {
-	ctx := context.Background()
+// TestSync_CollectsFailures verifies that a failure for one repository
+// does not prevent successful synchronization of the other repositories
+// and that every outcome is reported.
+func TestSync_CollectsFailures(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	gh := &fakeGitHub{
-		repos: []github.Repository{
-			{FullName: "user/repo1", Private: false, DefaultBranch: "main"},
-			{FullName: "user/repo2", Private: false, DefaultBranch: "main"},
+	var githubStub *fakeGitHub = &fakeGitHub{
+		repositories: []github.Repository{
+			{
+				FullName:      "user/repository-1",
+				Private:       false,
+				DefaultBranch: "main",
+			},
+			{
+				FullName:      "user/repository-2",
+				Private:       false,
+				DefaultBranch: "main",
+			},
 		},
 	}
 
-	gl := &fakeGitLab{
-		group:           gitlab.GroupInfo{ID: 42, FullPath: "my-group"},
+	var gitlabStub *fakeGitLab = &fakeGitLab{
+		group: gitlab.GroupInfo{
+			ID:       42,
+			FullPath: "my-group",
+		},
 		createdProjects: make(map[string]bool),
-		getErr: map[string]error{
-			"my-group/repo2": errors.New("permission denied"),
+		ensureProjectError: map[string]error{
+			"my-group/repository-2": errors.New("Permission denied"),
 		},
 	}
 
-	mirror := &fakeMirror{
-		refs: map[string]map[string]string{
-			"https://github.com/user/repo1.git":     {"refs/heads/main": "abc123"},
-			"https://gitlab.com/my-group/repo1.git": {},
-			"https://github.com/user/repo2.git":     {"refs/heads/main": "abc123"},
+	var mirrorStub *fakeMirror = &fakeMirror{
+		referencesByURL: map[string]map[string]string{
+			"https://github.com/user/repository-1.git": {
+				"refs/heads/main": "abc123",
+			},
+			"https://gitlab.com/my-group/repository-1.git": {},
+			"https://github.com/user/repository-2.git": {
+				"refs/heads/main": "abc123",
+			},
 		},
 	}
 
-	syncer := sync.New(gh, gl, mirror, 2)
-	results := syncer.Sync(ctx, "my-group", "gh-token", "gl-token", "gitlab.com")
+	var syncer *sync.Syncer = sync.New(
+		githubStub,
+		gitlabStub,
+		mirrorStub,
+		2,
+	)
+	var results []sync.SyncResult = syncer.Sync(
+		requestContext,
+		"my-group",
+		"gh-token",
+		"gl-token",
+		"gitlab.com",
+	)
 
 	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
+		test.Fatalf("Expected 2 results, got %d", len(results))
 	}
 
-	var synced, failed int
-	for _, r := range results {
-		if r.Status == sync.StatusSynced {
-			synced++
+	var syncedCount, failedCount int
+	var result sync.SyncResult
+	for _, result = range results {
+		if result.Status == sync.StatusSynced {
+			syncedCount++
 		}
-		if r.Status == sync.StatusFailed {
-			failed++
+		if result.Status == sync.StatusFailed {
+			failedCount++
 		}
 	}
-	if synced != 1 {
-		t.Errorf("expected 1 synced, got %d", synced)
+	if syncedCount != 1 {
+		test.Errorf("Expected 1 synced, got %d", syncedCount)
 	}
-	if failed != 1 {
-		t.Errorf("expected 1 failed, got %d", failed)
+	if failedCount != 1 {
+		test.Errorf("Expected 1 failed, got %d", failedCount)
 	}
 }
 
-func TestSync_GitHubError(t *testing.T) {
-	ctx := context.Background()
+// TestSync_GitHubError verifies that an error returned by ListRepositories is
+// surfaced as a single StatusFailed SyncResult.
+func TestSync_GitHubError(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	gh := &fakeGitHub{err: errors.New("network error")}
-	gl := &fakeGitLab{group: gitlab.GroupInfo{ID: 42, FullPath: "my-group"}}
-	mirror := &fakeMirror{}
+	var githubStub *fakeGitHub = &fakeGitHub{
+		listError: errors.New("Network error"),
+	}
+	var gitlabStub *fakeGitLab = &fakeGitLab{
+		group: gitlab.GroupInfo{
+			ID:       42,
+			FullPath: "my-group",
+		},
+	}
+	var mirrorStub *fakeMirror = &fakeMirror{}
 
-	syncer := sync.New(gh, gl, mirror, 2)
-	results := syncer.Sync(ctx, "my-group", "gh", "gl", "gitlab.com")
+	var syncer *sync.Syncer = sync.New(
+		githubStub,
+		gitlabStub,
+		mirrorStub,
+		2,
+	)
+	var results []sync.SyncResult = syncer.Sync(
+		requestContext,
+		"my-group",
+		"gh",
+		"gl",
+		"gitlab.com",
+	)
 
 	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+		test.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].Status != sync.StatusFailed {
-		t.Errorf("expected StatusFailed, got %v", results[0].Status)
+		test.Errorf("Expected StatusFailed, got %v", results[0].Status)
 	}
-	if !strings.Contains(results[0].Err.Error(), "network error") {
-		t.Errorf("expected error to contain 'network error', got %v", results[0].Err)
+	if !strings.Contains(results[0].Err.Error(), "Network error") {
+		test.Errorf(
+			"Expected error to contain 'Network error', got %v",
+			results[0].Err,
+		)
 	}
 }

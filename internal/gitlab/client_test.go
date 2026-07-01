@@ -7,125 +7,199 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/martmull/github-to-gitlab-mirror/internal/gitlab"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/gitlab"
 )
 
-func TestResolveGroup(t *testing.T) {
-	ctx := context.Background()
+// TestResolveGroup verifies that ResolveGroup calls the GitLab groups
+// endpoint and returns the identifier and full path decoded from the
+// response payload.
+func TestResolveGroup(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v4/groups/my-group/subgroup" {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":        42,
-				"full_path": "my-group/subgroup",
-			})
-			return
-		}
-		w.WriteHeader(404)
-	}))
-	defer srv.Close()
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(
+		func(writer http.ResponseWriter, request *http.Request) {
+			if request.URL.Path == "/api/v4/groups/my-group/subgroup" {
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]any{
+						"id":        42,
+						"full_path": "my-group/subgroup",
+					},
+				)
+				if encodeError != nil {
+					test.Fatalf("Encode response: %v", encodeError)
+				}
+				return
+			}
+			writer.WriteHeader(404)
+		}))
+	defer server.Close()
 
-	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
-	if err != nil {
-		t.Fatalf("NewClientWithURL: %v", err)
+	var client *gitlab.Client
+	var clientError error
+	client, clientError = gitlab.NewClientWithURL("test-token", server.URL)
+	if clientError != nil {
+		test.Fatalf("NewClientWithURL: %v", clientError)
 	}
-	info, err := client.ResolveGroup(ctx, "my-group/subgroup")
-	if err != nil {
-		t.Fatalf("ResolveGroup: %v", err)
+	var info gitlab.GroupInfo
+	var resolveError error
+	info, resolveError = client.ResolveGroup(
+		requestContext,
+		"my-group/subgroup",
+	)
+	if resolveError != nil {
+		test.Fatalf("ResolveGroup: %v", resolveError)
 	}
 	if info.ID != 42 {
-		t.Errorf("expected ID 42, got %d", info.ID)
+		test.Errorf("Expected ID 42, got %d", info.ID)
 	}
 	if info.FullPath != "my-group/subgroup" {
-		t.Errorf("expected FullPath my-group/subgroup, got %s", info.FullPath)
+		test.Errorf(
+			"Expected FullPath my-group/subgroup, got %s",
+			info.FullPath,
+		)
 	}
 }
 
-func TestEnsureProject_CreatesWhenNotFound(t *testing.T) {
-	ctx := context.Background()
-	created := false
+// TestEnsureProject_CreatesWhenNotFound verifies that EnsureProject
+// issues a POST /projects when the target project does not yet exist.
+func TestEnsureProject_CreatesWhenNotFound(test *testing.T) {
+	var requestContext context.Context = context.Background()
+	var created bool = false
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/api/v4/projects/my-group/my-repo" {
-			w.WriteHeader(404)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
-			return
-		}
-		if r.Method == "POST" && r.URL.Path == "/api/v4/projects" {
-			created = true
-			w.WriteHeader(201)
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": 1, "name": "my-repo"})
-			return
-		}
-		w.WriteHeader(404)
-	}))
-	defer srv.Close()
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(
+		func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == "GET" &&
+				request.URL.Path == "/api/v4/projects/my-group/my-repo" {
+				writer.WriteHeader(404)
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]string{"message": "Not Found"},
+				)
+				if encodeError != nil {
+					test.Fatalf("encode 404 body: %v", encodeError)
+				}
+				return
+			}
+			if request.Method == "POST" &&
+				request.URL.Path == "/api/v4/projects" {
+				created = true
+				writer.WriteHeader(201)
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]any{"id": 1, "name": "my-repo"},
+				)
+				if encodeError != nil {
+					test.Fatalf("encode 201 body: %v", encodeError)
+				}
+				return
+			}
+			writer.WriteHeader(404)
+		}))
+	defer server.Close()
 
-	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
-	if err != nil {
-		t.Fatalf("NewClientWithURL: %v", err)
+	var client *gitlab.Client
+	var clientError error
+	client, clientError = gitlab.NewClientWithURL("test-token", server.URL)
+	if clientError != nil {
+		test.Fatalf("NewClientWithURL: %v", clientError)
 	}
-	group := gitlab.GroupInfo{ID: 42, FullPath: "my-group"}
-	err = client.EnsureProject(ctx, group, "my-repo", true)
-	if err != nil {
-		t.Fatalf("EnsureProject: %v", err)
+	var group gitlab.GroupInfo = gitlab.GroupInfo{
+		ID:       42,
+		FullPath: "my-group",
+	}
+	var ensureError error = client.EnsureProject(
+		requestContext,
+		group,
+		"my-repo",
+		true,
+	)
+	if ensureError != nil {
+		test.Fatalf("EnsureProject: %v", ensureError)
 	}
 	if !created {
-		t.Error("expected project to be created")
+		test.Error("Expected project to be created")
 	}
 }
 
-func TestEnsureProject_SkipsWhenExists(t *testing.T) {
-	ctx := context.Background()
+// TestEnsureProject_SkipsWhenExists verifies that EnsureProject does not
+// issue any POST request when the target project already exists.
+func TestEnsureProject_SkipsWhenExists(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/api/v4/projects/my-group/my-repo" {
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": 1, "name": "my-repo"})
-			return
-		}
-		if r.Method == "POST" {
-			t.Error("should not have called POST when project exists")
-		}
-		w.WriteHeader(404)
-	}))
-	defer srv.Close()
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(
+		func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == "GET" &&
+				request.URL.Path == "/api/v4/projects/my-group/my-repo" {
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]any{"id": 1, "name": "my-repo"},
+				)
+				if encodeError != nil {
+					test.Fatalf("Encode response: %v", encodeError)
+				}
+				return
+			}
+			if request.Method == "POST" {
+				test.Error("Expected POST request when project does not exist")
+			}
+			writer.WriteHeader(404)
+		}))
+	defer server.Close()
 
-	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
-	if err != nil {
-		t.Fatalf("NewClientWithURL: %v", err)
+	var client *gitlab.Client
+	var clientError error
+	client, clientError = gitlab.NewClientWithURL("test-token", server.URL)
+	if clientError != nil {
+		test.Fatalf("NewClientWithURL: %v", clientError)
 	}
-	group := gitlab.GroupInfo{ID: 42, FullPath: "my-group"}
-	err = client.EnsureProject(ctx, group, "my-repo", false)
-	if err != nil {
-		t.Fatalf("EnsureProject: %v", err)
+	var group gitlab.GroupInfo = gitlab.GroupInfo{
+		ID:       42,
+		FullPath: "my-group",
+	}
+	var ensureError error = client.EnsureProject(
+		requestContext,
+		group,
+		"my-repo",
+		false,
+	)
+	if ensureError != nil {
+		test.Fatalf("EnsureProject: %v", ensureError)
 	}
 }
 
-func TestSetDefaultBranch(t *testing.T) {
-	ctx := context.Background()
+// TestSetDefaultBranch verifies that SetDefaultBranch issues the expected
+// PUT request against the GitLab projects endpoint.
+func TestSetDefaultBranch(test *testing.T) {
+	var requestContext context.Context = context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "PUT" && r.URL.Path == "/api/v4/projects/my-group/my-repo" {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":             1,
-				"default_branch": "develop",
-			})
-			return
-		}
-		w.WriteHeader(404)
-	}))
-	defer srv.Close()
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(
+		func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == "PUT" &&
+				request.URL.Path == "/api/v4/projects/my-group/my-repo" {
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]any{
+						"id":             1,
+						"default_branch": "develop",
+					},
+				)
+				if encodeError != nil {
+					test.Fatalf("Encode response: %v", encodeError)
+				}
+				return
+			}
+			writer.WriteHeader(404)
+		}))
+	defer server.Close()
 
-	client, err := gitlab.NewClientWithURL("test-token", srv.URL)
-	if err != nil {
-		t.Fatalf("NewClientWithURL: %v", err)
+	var client *gitlab.Client
+	var clientError error
+	client, clientError = gitlab.NewClientWithURL("test-token", server.URL)
+	if clientError != nil {
+		test.Fatalf("NewClientWithURL: %v", clientError)
 	}
-	err = client.SetDefaultBranch(ctx, "my-group/my-repo", "develop")
-	if err != nil {
-		t.Fatalf("SetDefaultBranch: %v", err)
+	var setError error = client.SetDefaultBranch(
+		requestContext,
+		"my-group/my-repo",
+		"develop",
+	)
+	if setError != nil {
+		test.Fatalf("SetDefaultBranch: %v", setError)
 	}
 }

@@ -6,216 +6,384 @@ import (
 	"os"
 	"sync"
 
-	"github.com/martmull/github-to-gitlab-mirror/internal/github"
-	"github.com/martmull/github-to-gitlab-mirror/internal/gitlab"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/github"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/gitlab"
 )
 
+// SyncStatus describes the outcome of synchronizing a single repository.
 type SyncStatus int
 
 const (
+	// StatusSkipped indicates that the source and destination refs were
+	// identical, so no mirror clone or push was performed.
 	StatusSkipped SyncStatus = iota
+	// StatusSynced indicates that the repository was successfully cloned
+	// from GitHub and pushed to GitLab.
 	StatusSynced
+	// StatusFailed indicates that the repository could not be synchronized
+	// and that the error is available in SyncResult.Err.
 	StatusFailed
 )
 
+// SyncResult reports the outcome of synchronizing a single repository.
+// Err is non-nil only when Status is StatusFailed.
 type SyncResult struct {
 	Repo   string
 	Status SyncStatus
 	Err    error
 }
 
+// GitHubClient is the subset of the GitHub client behavior consumed by
+// the synchronizer. It exists so that tests can substitute a fake.
 type GitHubClient interface {
-	ListRepos(ctx context.Context) ([]github.Repository, error)
+	ListRepositories(
+		requestContext context.Context,
+	) ([]github.Repository, error)
 }
 
+// GitLabClient is the subset of the GitLab client behavior consumed by
+// the synchronizer. It exists so that tests can substitute a fake.
 type GitLabClient interface {
-	ResolveGroup(ctx context.Context, groupPath string) (gitlab.GroupInfo, error)
+	ResolveGroup(
+		requestContext context.Context,
+		groupPath string,
+	) (gitlab.GroupInfo, error)
 	EnsureProject(
-		ctx context.Context, group gitlab.GroupInfo, name string, private bool,
+		requestContext context.Context,
+		group gitlab.GroupInfo,
+		name string,
+		private bool,
 	) error
-	SetDefaultBranch(ctx context.Context, projectPath, branch string) error
+	SetDefaultBranch(
+		requestContext context.Context,
+		projectPath, branch string,
+	) error
 }
 
+// MirrorClient is the subset of the mirror client behavior consumed by
+// the synchronizer. It exists so that tests can substitute a fake.
 type MirrorClient interface {
 	GetRefs(
-		ctx context.Context, url, user, token string,
+		requestContext context.Context,
+		remoteURL, user, token string,
 	) (map[string]string, error)
-	MirrorClone(ctx context.Context, url, user, token, dest string) error
-	MirrorPush(ctx context.Context, repoDir, url, user, token string) error
+	MirrorClone(
+		requestContext context.Context,
+		remoteURL, user, token, destinationDirectory string,
+	) error
+	MirrorPush(
+		requestContext context.Context,
+		repositoryDirectory, remoteURL, user, token string,
+	) error
 }
 
+// Syncer orchestrates the mirroring of every GitHub repository owned or
+// accessible by the authenticated user to the target GitLab group using
+// a fixed worker pool.
 type Syncer struct {
-	github  GitHubClient
-	gitlab  GitLabClient
-	mirror  MirrorClient
-	workers int
+	githubClient GitHubClient
+	gitlabClient GitLabClient
+	mirrorClient MirrorClient
+	workers      int
 }
 
+// New returns a Syncer configured with the provided clients and a worker
+// pool of workers goroutines. When workers is less than 1 the pool falls
+// back to five goroutines.
 func New(
-	gh GitHubClient, gl GitLabClient, m MirrorClient, workers int,
+	githubClient GitHubClient,
+	gitlabClient GitLabClient,
+	mirrorClient MirrorClient,
+	workers int,
 ) *Syncer {
 	if workers < 1 {
 		workers = 5
 	}
-	return &Syncer{github: gh, gitlab: gl, mirror: m, workers: workers}
+	return &Syncer{
+		githubClient: githubClient,
+		gitlabClient: gitlabClient,
+		mirrorClient: mirrorClient,
+		workers:      workers,
+	}
 }
 
-func (s *Syncer) Sync(
-	ctx context.Context, groupPath, ghToken, glToken, glHost string,
+// Sync lists every GitHub repository, resolves the target GitLab group,
+// then dispatches every repository to a worker pool that mirrors each
+// one. The returned slice contains exactly one SyncResult per repository
+// that was processed. When listing the repositories or resolving the
+// group fails a single SyncResult carrying StatusFailed and an empty
+// Repo is returned.
+func (syncer *Syncer) Sync(
+	requestContext context.Context,
+	groupPath, githubToken, gitlabToken, gitlabHost string,
 ) []SyncResult {
-	repos, err := s.github.ListRepos(ctx)
-	if err != nil {
+	var repositories []github.Repository
+	var listError error
+	repositories, listError = syncer.githubClient.ListRepositories(
+		requestContext,
+	)
+	if listError != nil {
 		return []SyncResult{{
 			Repo:   "",
 			Status: StatusFailed,
-			Err:    fmt.Errorf("list repos: %w", err),
+			Err:    fmt.Errorf("list repos: %w", listError),
 		}}
 	}
 
-	group, err := s.gitlab.ResolveGroup(ctx, groupPath)
-	if err != nil {
+	var group gitlab.GroupInfo
+	var resolveError error
+	group, resolveError = syncer.gitlabClient.ResolveGroup(
+		requestContext,
+		groupPath,
+	)
+	if resolveError != nil {
 		return []SyncResult{{
 			Repo:   "",
 			Status: StatusFailed,
-			Err:    fmt.Errorf("resolve group: %w", err),
+			Err:    fmt.Errorf("resolve group: %w", resolveError),
 		}}
 	}
 
-	repoCh := make(chan github.Repository, len(repos))
-	resultCh := make(chan SyncResult, len(repos))
+	var repositoryChannel chan github.Repository = make(
+		chan github.Repository,
+		len(repositories),
+	)
+	var resultChannel chan SyncResult = make(
+		chan SyncResult,
+		len(repositories),
+	)
 
-	var wg sync.WaitGroup
-	for i := 0; i < s.workers; i++ {
-		wg.Add(1)
-		go s.worker(ctx, &wg, group, ghToken, glToken, glHost, repoCh, resultCh)
+	var waitGroup sync.WaitGroup
+	var workerIndex int
+	for workerIndex = 0; workerIndex < syncer.workers; workerIndex++ {
+		waitGroup.Add(1)
+		go syncer.worker(
+			requestContext,
+			&waitGroup,
+			group,
+			githubToken,
+			gitlabToken,
+			gitlabHost,
+			repositoryChannel,
+			resultChannel,
+		)
 	}
 
-	for _, r := range repos {
-		repoCh <- r
+	var repository github.Repository
+	for _, repository = range repositories {
+		repositoryChannel <- repository
 	}
-	close(repoCh)
+	close(repositoryChannel)
 
-	wg.Wait()
-	close(resultCh)
+	waitGroup.Wait()
+	close(resultChannel)
 
 	var results []SyncResult
-	for r := range resultCh {
-		results = append(results, r)
+	var result SyncResult
+	for result = range resultChannel {
+		results = append(results, result)
 	}
 	return results
 }
 
-func (s *Syncer) worker(
-	ctx context.Context,
-	wg *sync.WaitGroup,
+// worker consumes repositories from repositories and pushes the outcome
+// of syncing each one on results until repositories is closed.
+func (syncer *Syncer) worker(
+	requestContext context.Context,
+	waitGroup *sync.WaitGroup,
 	group gitlab.GroupInfo,
-	ghToken, glToken, glHost string,
-	repos <-chan github.Repository,
+	githubToken, gitlabToken, gitlabHost string,
+	repositories <-chan github.Repository,
 	results chan<- SyncResult,
 ) {
-	defer wg.Done()
+	defer waitGroup.Done()
 
-	for repo := range repos {
-		result := s.syncRepo(ctx, group, repo, ghToken, glToken, glHost)
+	var repository github.Repository
+	for repository = range repositories {
+		var result SyncResult = syncer.syncRepository(
+			requestContext,
+			group,
+			repository,
+			githubToken,
+			gitlabToken,
+			gitlabHost,
+		)
 		results <- result
 	}
 }
 
-func (s *Syncer) syncRepo(
-	ctx context.Context, group gitlab.GroupInfo, repo github.Repository,
-	ghToken, glToken, glHost string,
+// syncRepository synchronizes the given GitHub repository to the given
+// GitLab group. It compares the remote refs first and returns
+// StatusSkipped when the GitHub and GitLab sides advertise the same
+// hashes. Otherwise it ensures the destination project exists, performs
+// a mirror clone from GitHub and a mirror push to GitLab, then updates
+// the default branch on the GitLab side.
+func (syncer *Syncer) syncRepository(
+	requestContext context.Context,
+	group gitlab.GroupInfo,
+	repository github.Repository,
+	githubToken, gitlabToken, gitlabHost string,
 ) SyncResult {
-	ghURL := fmt.Sprintf("https://github.com/%s.git", repo.FullName)
-	projectPath := group.FullPath + "/" + repoName(repo.FullName)
-	glURL := fmt.Sprintf("https://%s/%s.git", glHost, projectPath)
+	var githubURL string = fmt.Sprintf(
+		"https://github.com/%s.git",
+		repository.FullName,
+	)
+	var projectPath string = group.FullPath + "/" + repositoryName(
+		repository.FullName,
+	)
+	var gitlabURL string = fmt.Sprintf(
+		"https://%s/%s.git",
+		gitlabHost,
+		projectPath,
+	)
 
-	ghRefs, err := s.mirror.GetRefs(ctx, ghURL, "x-access-token", ghToken)
-	if err != nil {
+	var githubReferences map[string]string
+	var githubReferencesError error
+	githubReferences, githubReferencesError = syncer.mirrorClient.GetRefs(
+		requestContext,
+		githubURL,
+		"x-access-token",
+		githubToken,
+	)
+	if githubReferencesError != nil {
 		return SyncResult{
-			Repo:   repo.FullName,
+			Repo:   repository.FullName,
 			Status: StatusFailed,
-			Err:    fmt.Errorf("get gh refs: %w", err),
+			Err: fmt.Errorf(
+				"get gh refs: %w",
+				githubReferencesError,
+			),
 		}
 	}
 
-	glRefs, err := s.mirror.GetRefs(ctx, glURL, "oauth2", glToken)
-	if err != nil {
-		glRefs = map[string]string{}
+	var gitlabReferences map[string]string
+	var gitlabReferencesError error
+	gitlabReferences, gitlabReferencesError = syncer.mirrorClient.GetRefs(
+		requestContext,
+		gitlabURL,
+		"oauth2",
+		gitlabToken,
+	)
+	if gitlabReferencesError != nil {
+		gitlabReferences = map[string]string{}
 	}
 
-	if refsEqual(ghRefs, glRefs) {
-		return SyncResult{Repo: repo.FullName, Status: StatusSkipped}
-	}
-
-	name := repoName(repo.FullName)
-	if err := s.gitlab.EnsureProject(ctx, group, name, repo.Private); err != nil {
+	if referencesEqual(githubReferences, gitlabReferences) {
 		return SyncResult{
-			Repo:   repo.FullName,
-			Status: StatusFailed,
-			Err:    fmt.Errorf("ensure project: %w", err),
+			Repo:   repository.FullName,
+			Status: StatusSkipped,
 		}
 	}
 
-	tmpDir, err := os.MkdirTemp("", "mirror-*")
-	if err != nil {
+	var name string = repositoryName(repository.FullName)
+	var ensureError error = syncer.gitlabClient.EnsureProject(
+		requestContext,
+		group,
+		name,
+		repository.Private,
+	)
+	if ensureError != nil {
 		return SyncResult{
-			Repo:   repo.FullName,
+			Repo:   repository.FullName,
 			Status: StatusFailed,
-			Err:    fmt.Errorf("temp dir: %w", err),
-		}
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cloneDir := tmpDir + "/repo.git"
-	if err := s.mirror.MirrorClone(
-			ctx, ghURL, "x-access-token", ghToken, cloneDir,
-		); err != nil {
-		return SyncResult{
-			Repo:   repo.FullName,
-			Status: StatusFailed,
-			Err:    fmt.Errorf("mirror clone: %w", err),
+			Err:    fmt.Errorf("ensure project: %w", ensureError),
 		}
 	}
 
-	if err := s.mirror.MirrorPush(
-			ctx, cloneDir, glURL, "oauth2", glToken,
-		); err != nil {
+	var temporaryDirectory string
+	var temporaryDirectoryError error
+	temporaryDirectory, temporaryDirectoryError = os.MkdirTemp(
+		"",
+		"mirror-*",
+	)
+	if temporaryDirectoryError != nil {
 		return SyncResult{
-			Repo:   repo.FullName,
+			Repo:   repository.FullName,
 			Status: StatusFailed,
-			Err:    fmt.Errorf("mirror push: %w", err),
+			Err: fmt.Errorf(
+				"temp dir: %w",
+				temporaryDirectoryError,
+			),
+		}
+	}
+	defer func() { _ = os.RemoveAll(temporaryDirectory) }()
+
+	var cloneDirectory string = temporaryDirectory + "/repo.git"
+	var cloneError error = syncer.mirrorClient.MirrorClone(
+		requestContext,
+		githubURL,
+		"x-access-token",
+		githubToken,
+		cloneDirectory,
+	)
+	if cloneError != nil {
+		return SyncResult{
+			Repo:   repository.FullName,
+			Status: StatusFailed,
+			Err:    fmt.Errorf("mirror clone: %w", cloneError),
 		}
 	}
 
-	if err := s.gitlab.SetDefaultBranch(
-			ctx, projectPath, repo.DefaultBranch,
-		); err != nil {
+	var pushError error = syncer.mirrorClient.MirrorPush(
+		requestContext,
+		cloneDirectory,
+		gitlabURL,
+		"oauth2",
+		gitlabToken,
+	)
+	if pushError != nil {
 		return SyncResult{
-			Repo:   repo.FullName,
+			Repo:   repository.FullName,
 			Status: StatusFailed,
-			Err:    fmt.Errorf("set default branch: %w", err),
+			Err:    fmt.Errorf("mirror push: %w", pushError),
 		}
 	}
 
-	return SyncResult{Repo: repo.FullName, Status: StatusSynced}
+	var defaultBranchError error = syncer.gitlabClient.SetDefaultBranch(
+		requestContext,
+		projectPath,
+		repository.DefaultBranch,
+	)
+	if defaultBranchError != nil {
+		return SyncResult{
+			Repo:   repository.FullName,
+			Status: StatusFailed,
+			Err: fmt.Errorf(
+				"set default branch: %w",
+				defaultBranchError,
+			),
+		}
+	}
+
+	return SyncResult{Repo: repository.FullName, Status: StatusSynced}
 }
 
-func repoName(fullName string) string {
-	for i := len(fullName) - 1; i >= 0; i-- {
-		if fullName[i] == '/' {
-			return fullName[i+1:]
+// repositoryName returns the substring after the last "/" in fullName,
+// falling back to fullName itself when it does not contain a slash. It
+// extracts the repository name from a "owner/name" GitHub full name.
+func repositoryName(fullName string) string {
+	var index int
+	for index = len(fullName) - 1; index >= 0; index-- {
+		if fullName[index] == '/' {
+			return fullName[index+1:]
 		}
 	}
 	return fullName
 }
 
-func refsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
+// referencesEqual reports whether the two ref maps contain exactly the
+// same set of keys mapped to exactly the same commit hashes.
+func referencesEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
 		return false
 	}
-	for k, va := range a {
-		vb, ok := b[k]
-		if !ok || va != vb {
+	var key string
+	var leftValue string
+	for key, leftValue = range left {
+		var rightValue string
+		var exists bool
+		rightValue, exists = right[key]
+		if !exists || leftValue != rightValue {
 			return false
 		}
 	}

@@ -3,97 +3,151 @@ package gitlab
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	gl "github.com/xanzy/go-gitlab"
+	gl "gitlab.com/gitlab-org/api/client-go"
 )
 
-// GroupInfo holds the resolved group ID and full path.
+// GroupInfo holds the numeric identifier and the full slash-separated
+// path of a GitLab group that has been resolved from its path.
 type GroupInfo struct {
-	ID       int
+	ID       int64
 	FullPath string
 }
 
-// Client wraps go-gitlab for GitLab API operations.
+// Client wraps a go-gitlab client and exposes the group and project
+// operations required by the mirroring pipeline.
 type Client struct {
 	client *gl.Client
 }
 
-// NewClient creates a new Client using host and token.
+// NewClient returns a Client configured to talk to the GitLab instance
+// reachable at https://<host> using the provided personal access token.
 // For gitlab.com, pass "gitlab.com" as host. For self-managed instances,
-// pass the full host (e.g. "gitlab.example.com").
+// pass the full host (for example "gitlab.example.com").
 func NewClient(host, token string) (*Client, error) {
-	client, err := gl.NewClient(token, gl.WithBaseURL("https://"+host))
-	if err != nil {
-		return nil, fmt.Errorf("create gitlab client: %w", err)
-	}
-	return &Client{client: client}, nil
-}
-
-// NewClientWithURL creates a new Client with a custom base URL (used in tests).
-func NewClientWithURL(token, baseURL string) (*Client, error) {
-	client, err := gl.NewClient(token, gl.WithBaseURL(baseURL))
-	if err != nil {
-		return nil, fmt.Errorf("create gitlab client: %w", err)
-	}
-	return &Client{client: client}, nil
-}
-
-// ResolveGroup fetches group details by full path (e.g. "my-group/subgroup").
-func (c *Client) ResolveGroup(
-	ctx context.Context, groupPath string,
-) (GroupInfo, error) {
-	g, _, err := c.client.Groups.GetGroup(groupPath, nil, gl.WithContext(ctx))
-	if err != nil {
-		return GroupInfo{}, fmt.Errorf("resolve group %q: %w", groupPath, err)
-	}
-	return GroupInfo{ID: g.ID, FullPath: g.FullPath}, nil
-}
-
-// EnsureProject checks if a project exists in the given group
-// and creates it if not found.
-func (c *Client) EnsureProject(
-	ctx context.Context, group GroupInfo, name string, private bool,
-) error {
-	fullPath := group.FullPath + "/" + name
-
-	_, resp, err := c.client.Projects.GetProject(
-		fullPath, nil, gl.WithContext(ctx),
+	var underlyingClient *gl.Client
+	var creationError error
+	underlyingClient, creationError = gl.NewClient(
+		token,
+		gl.WithBaseURL("https://"+host),
 	)
-	if err == nil {
+	if creationError != nil {
+		return nil, fmt.Errorf("Create GitLab client: %w", creationError)
+	}
+	return &Client{client: underlyingClient}, nil
+}
+
+// NewClientWithURL returns a Client authenticated with the provided token
+// and configured to talk to the GitLab API served at baseURL. It is
+// primarily used in tests to point the client at an httptest server.
+func NewClientWithURL(token, baseURL string) (*Client, error) {
+	var underlyingClient *gl.Client
+	var creationError error
+	underlyingClient, creationError = gl.NewClient(
+		token,
+		gl.WithBaseURL(baseURL),
+	)
+	if creationError != nil {
+		return nil, fmt.Errorf("Create GitLab client: %w", creationError)
+	}
+	return &Client{client: underlyingClient}, nil
+}
+
+// ResolveGroup fetches the group referenced by groupPath (for example
+// "my-group/subgroup") and returns its numeric identifier along with its
+// canonical full path.
+func (client *Client) ResolveGroup(
+	requestContext context.Context, groupPath string,
+) (GroupInfo, error) {
+	var group *gl.Group
+	var resolveError error
+	group, _, resolveError = client.client.Groups.GetGroup(
+		groupPath,
+		nil,
+		gl.WithContext(requestContext),
+	)
+	if resolveError != nil {
+		return GroupInfo{}, fmt.Errorf(
+			"Resolve group %q: %w",
+			groupPath,
+			resolveError,
+		)
+	}
+	return GroupInfo{ID: group.ID, FullPath: group.FullPath}, nil
+}
+
+// EnsureProject creates the project named name inside the group described
+// by group when it does not exist. Existing projects are left untouched.
+// The private flag controls the visibility used when the project is
+// created (private when true, public otherwise).
+func (client *Client) EnsureProject(
+	requestContext context.Context,
+	group GroupInfo,
+	name string,
+	private bool,
+) error {
+	var fullPath string = group.FullPath + "/" + name
+
+	var response *gl.Response
+	var getError error
+	_, response, getError = client.client.Projects.GetProject(
+		fullPath,
+		nil,
+		gl.WithContext(requestContext),
+	)
+	if getError == nil {
 		return nil
 	}
-	if resp == nil {
-		return fmt.Errorf("get project %q: %w", fullPath, err)
+	if response == nil {
+		return fmt.Errorf("Get project %q: %w", fullPath, getError)
 	}
-	if resp.StatusCode != 404 {
-		return fmt.Errorf("get project %q: %w", fullPath, err)
+	if response.StatusCode != 404 {
+		return fmt.Errorf("Get project %q: %w", fullPath, getError)
 	}
 
-	visibility := gl.PublicVisibility
+	var visibility gl.VisibilityValue = gl.PublicVisibility
 	if private {
 		visibility = gl.PrivateVisibility
 	}
 
-	_, _, err = c.client.Projects.CreateProject(&gl.CreateProjectOptions{
-		Name:        gl.Ptr(name),
-		NamespaceID: gl.Ptr(group.ID),
-		Visibility:  gl.Ptr(visibility),
-	}, gl.WithContext(ctx))
-	if err != nil {
-		return fmt.Errorf("create project %q: %w", fullPath, err)
+	var createError error
+	_, _, createError = client.client.Projects.CreateProject(
+		&gl.CreateProjectOptions{
+			Name:        gl.Ptr(name),
+			NamespaceID: gl.Ptr(group.ID),
+			Visibility:  gl.Ptr(visibility),
+		},
+		gl.WithContext(requestContext),
+	)
+	if createError != nil {
+		if strings.Contains(createError.Error(), "has already been taken") {
+			return nil
+		}
+		return fmt.Errorf("Create project %q: %w", fullPath, createError)
 	}
 	return nil
 }
 
-// SetDefaultBranch updates the default branch for a project.
-func (c *Client) SetDefaultBranch(
-	ctx context.Context, projectPath, branch string,
+// SetDefaultBranch updates the default branch of the project identified
+// by projectPath to branch.
+func (client *Client) SetDefaultBranch(
+	requestContext context.Context, projectPath, branch string,
 ) error {
-	_, _, err := c.client.Projects.EditProject(projectPath, &gl.EditProjectOptions{
-		DefaultBranch: gl.Ptr(branch),
-	}, gl.WithContext(ctx))
-	if err != nil {
-		return fmt.Errorf("set default branch for %q: %w", projectPath, err)
+	var editError error
+	_, _, editError = client.client.Projects.EditProject(
+		projectPath,
+		&gl.EditProjectOptions{
+			DefaultBranch: gl.Ptr(branch),
+		},
+		gl.WithContext(requestContext),
+	)
+	if editError != nil {
+		return fmt.Errorf(
+			"Set default branch for %q: %w",
+			projectPath,
+			editError,
+		)
 	}
 	return nil
 }

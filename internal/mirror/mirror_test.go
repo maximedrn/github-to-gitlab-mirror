@@ -7,101 +7,188 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/martmull/github-to-gitlab-mirror/internal/mirror"
+	"github.com/maximedrn/github-to-gitlab-mirror/internal/mirror"
 )
 
-func TestGetRefs_LocalBareRepo(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
+// TestGetRefs_LocalBareRepo verifies that GetRefs returns the refs of a
+// bare repository accessed through a file:// URL.
+func TestGetRefs_LocalBareRepo(test *testing.T) {
+	var requestContext context.Context = context.Background()
+	var directory string = test.TempDir()
 
-	// Create a bare repo with one commit
-	bare := filepath.Join(dir, "source.git")
-	runGit(t, dir, "init", "--bare", bare)
+	// Create a bare repo with one commit.
+	var bareRepository string = filepath.Join(directory, "source.git")
+	runGitCommand(test, directory, "init", "--bare", bareRepository)
 
-	// Clone the bare repo, make a commit, push
-	tmp := filepath.Join(dir, "tmp")
-	runGit(t, dir, "clone", bare, tmp)
-	runGit(t, tmp, "config", "user.email", "test@test.com")
-	runGit(t, tmp, "config", "user.name", "Test")
-	runGit(t, tmp, "checkout", "-b", "main")
-	writeFile(t, filepath.Join(tmp, "README.md"), "# hello")
-	runGit(t, tmp, "add", "README.md")
-	runGit(t, tmp, "commit", "-m", "initial")
-	runGit(t, tmp, "push", "origin", "main")
-	runGit(t, bare, "symbolic-ref", "HEAD", "refs/heads/main")
+	// Clone the bare repo, make a commit, push.
+	var temporaryDirectory string = filepath.Join(directory, "tmp")
+	runGitCommand(test, directory, "clone", bareRepository, temporaryDirectory)
+	runGitCommand(
+		test,
+		temporaryDirectory,
+		"config",
+		"user.email",
+		"test@test.com",
+	)
+	runGitCommand(test, temporaryDirectory, "config", "user.name", "Test")
+	runGitCommand(test, temporaryDirectory, "checkout", "-b", "main")
+	writeFileContent(
+		test,
+		filepath.Join(temporaryDirectory, "README.md"),
+		"# hello",
+	)
+	runGitCommand(test, temporaryDirectory, "add", "README.md")
+	runGitCommand(test, temporaryDirectory, "commit", "-m", "initial")
+	runGitCommand(test, temporaryDirectory, "push", "origin", "main")
+	runGitCommand(
+		test,
+		bareRepository,
+		"symbolic-ref",
+		"HEAD",
+		"refs/heads/main",
+	)
 
-	client := mirror.New()
-	refs, err := client.GetRefs(ctx, "file://"+bare, "", "")
-	if err != nil {
-		t.Fatalf("GetRefs: %v", err)
+	var client *mirror.Client = mirror.New()
+	var references map[string]string
+	var listError error
+	references, listError = client.GetRefs(
+		requestContext,
+		"file://"+bareRepository,
+		"",
+		"",
+	)
+	if listError != nil {
+		test.Fatalf("GetRefs: %v", listError)
 	}
 
-	if _, ok := refs["refs/heads/main"]; !ok {
-		t.Errorf("expected refs/heads/main to exist, got %v", refs)
-	}
-}
-
-func TestMirrorClonePush(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-
-	// Source bare repo
-	src := filepath.Join(dir, "source.git")
-	runGit(t, dir, "init", "--bare", src)
-
-	// Clone, commit, push
-	tmp := filepath.Join(dir, "tmp")
-	runGit(t, dir, "clone", src, tmp)
-	runGit(t, tmp, "config", "user.email", "test@test.com")
-	runGit(t, tmp, "config", "user.name", "Test")
-	runGit(t, tmp, "checkout", "-b", "main")
-	writeFile(t, filepath.Join(tmp, "README.md"), "# hello")
-	runGit(t, tmp, "add", "README.md")
-	runGit(t, tmp, "commit", "-m", "initial")
-	runGit(t, tmp, "push", "origin", "main")
-	runGit(t, src, "symbolic-ref", "HEAD", "refs/heads/main")
-
-	// Destination bare repo
-	dst := filepath.Join(dir, "dest.git")
-	runGit(t, dir, "init", "--bare", dst)
-
-	// Mirror clone
-	client := mirror.New()
-	cloneDir := filepath.Join(dir, "clone.git")
-	if err := client.MirrorClone(
-		ctx, "file://"+src, "", "", cloneDir,
-	); err != nil {
-		t.Fatalf("MirrorClone: %v", err)
-	}
-
-	// Mirror push
-	if err := client.MirrorPush(ctx, cloneDir, "file://"+dst, "", ""); err != nil {
-		t.Fatalf("MirrorPush: %v", err)
-	}
-
-	// Verify dst has the ref
-	refs, err := client.GetRefs(ctx, "file://"+dst, "", "")
-	if err != nil {
-		t.Fatalf("GetRefs on dst: %v", err)
-	}
-	if _, ok := refs["refs/heads/main"]; !ok {
-		t.Errorf("expected refs/heads/main in dst, got %v", refs)
+	if _, exists := references["refs/heads/main"]; !exists {
+		test.Errorf(
+			"Expected refs/heads/main to exist, got %v",
+			references,
+		)
 	}
 }
 
-func runGit(t *testing.T, workDir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = workDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
+// TestMirrorClonePush verifies that MirrorClone followed by MirrorPush
+// copies every ref from a source bare repository to a destination bare
+// repository.
+func TestMirrorClonePush(test *testing.T) {
+	var requestContext context.Context = context.Background()
+	var directory string = test.TempDir()
+
+	// Source bare repo.
+	var sourceRepository string = filepath.Join(directory, "source.git")
+	runGitCommand(test, directory, "init", "--bare", sourceRepository)
+
+	// Clone, commit, push.
+	var temporaryDirectory string = filepath.Join(directory, "tmp")
+	runGitCommand(
+		test,
+		directory,
+		"clone",
+		sourceRepository,
+		temporaryDirectory,
+	)
+	runGitCommand(
+		test,
+		temporaryDirectory,
+		"config",
+		"user.email",
+		"test@test.com",
+	)
+	runGitCommand(test, temporaryDirectory, "config", "user.name", "Test")
+	runGitCommand(test, temporaryDirectory, "checkout", "-b", "main")
+	writeFileContent(
+		test,
+		filepath.Join(temporaryDirectory, "README.md"),
+		"# hello",
+	)
+	runGitCommand(test, temporaryDirectory, "add", "README.md")
+	runGitCommand(test, temporaryDirectory, "commit", "-m", "initial")
+	runGitCommand(test, temporaryDirectory, "push", "origin", "main")
+	runGitCommand(
+		test,
+		sourceRepository,
+		"symbolic-ref",
+		"HEAD",
+		"refs/heads/main",
+	)
+
+	// Destination bare repository.
+	var destinationRepository string = filepath.Join(directory, "dest.git")
+	runGitCommand(test, directory, "init", "--bare", destinationRepository)
+
+	// Mirror clone.
+	var client *mirror.Client = mirror.New()
+	var cloneDirectory string = filepath.Join(directory, "clone.git")
+	var cloneError error = client.MirrorClone(
+		requestContext,
+		"file://"+sourceRepository,
+		"",
+		"",
+		cloneDirectory,
+	)
+	if cloneError != nil {
+		test.Fatalf("MirrorClone: %v", cloneError)
+	}
+
+	// Mirror push.
+	var pushError error = client.MirrorPush(
+		requestContext,
+		cloneDirectory,
+		"file://"+destinationRepository,
+		"",
+		"",
+	)
+	if pushError != nil {
+		test.Fatalf("MirrorPush: %v", pushError)
+	}
+
+	// Verify destination has the ref.
+	var references map[string]string
+	var listError error
+	references, listError = client.GetRefs(
+		requestContext,
+		"file://"+destinationRepository,
+		"",
+		"",
+	)
+	if listError != nil {
+		test.Fatalf("GetRefs on destination: %v", listError)
+	}
+	if _, exists := references["refs/heads/main"]; !exists {
+		test.Errorf(
+			"Expected refs/heads/main in destination, got %v",
+			references,
+		)
 	}
 }
 
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("writeFile: %v", err)
+// runGitCommand runs the git subcommand described by arguments in the
+// workingDirectory. When the command fails the current test is aborted
+// with the captured combined output.
+func runGitCommand(
+	test *testing.T,
+	workingDirectory string,
+	arguments ...string,
+) {
+	test.Helper()
+	var command *exec.Cmd = exec.Command("git", arguments...)
+	command.Dir = workingDirectory
+	var output []byte
+	var commandError error
+	output, commandError = command.CombinedOutput()
+	if commandError != nil {
+		test.Fatalf("git %v: %v\n%s", arguments, commandError, output)
+	}
+}
+
+// writeFileContent writes content to the file at path, aborting the
+// current test when the file cannot be written.
+func writeFileContent(test *testing.T, path, content string) {
+	test.Helper()
+	var writeError error = os.WriteFile(path, []byte(content), 0644)
+	if writeError != nil {
+		test.Fatalf("writeFile: %v", writeError)
 	}
 }
