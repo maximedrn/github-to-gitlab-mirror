@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - lll
+  settings:
+    lll:
+      line-length: 100
+    staticcheck:
+      checks:
+        - all
+        - -ST1005
+        - -ST1023
+        - -QF1011
+        - -S1021
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/maximedrn/github-to-gitlab-mirror
+
+run:
+  timeout: 3m

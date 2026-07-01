@@ -1,0 +1,16 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "gofmt",
+    "golangci",
+    "golines",
+    "maximedrn",
+    "syncer"
+  ],
+  "ignorePaths": [
+    "go.sum",
+    "go.mod",
+    ".golangci.yml"
+  ]
+}

@@ -1,0 +1,35 @@
+name: Mirror GitHub to GitLab
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Sync all repositories to GitLab
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_GROUP: ${{ vars.GITLAB_GROUP }}
+          GITLAB_HOST: ${{ vars.GITLAB_HOST }}
+        run: go run .
