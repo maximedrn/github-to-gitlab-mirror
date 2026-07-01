@@ -1,92 +1,158 @@
-# GitHub → GitLab — Mirroir automatique
+# GitHub to GitLab Mirror
 
-Ce dépôt synchronise chaque jour, automatiquement, tous vos dépôts GitHub
-(personnels **et** ceux de vos organisations, publics **et** privés) vers un
-groupe GitLab. Seuls les dépôts ayant réellement changé depuis la dernière
-exécution sont re-poussés. Le projet est écrit en **Go** (plus de script shell).
+Daily automatic synchronization of all your GitHub repositories (personal
+and organization memberships, public and private) to a GitLab group. Only
+repositories that have actually changed since the last run are pushed.
+Written in **Go**.
 
-## Fonctionnement
+## Compatibility
 
-`.github/workflows/mirror-to-gitlab.yml` déclenche le binaire Go (`go run .`)
-tous les jours à 03h00 UTC (et à la demande depuis l'onglet **Actions**). Le
-binaire :
+| OS                 | Status |
+| ------------------ | ------ |
+| macOS              | ✅      |
+| Linux              | ✅      |
+| Windows (via WSL2) | ✅      |
+| Native Windows     | ✅      |
 
-1. Liste tous les dépôts accessibles au token (propriétaire + membre
-   d'organisation), publics et privés, via l'API GitHub.
-2. Pour chacun, compare rapidement les références Git (`git ls-remote`) entre
-   GitHub et GitLab — si elles sont identiques, le dépôt est ignoré, sans
-   clone ni transfert.
-3. Sinon : crée le projet GitLab s'il n'existe pas encore (avec la même
-   visibilité que sur GitHub), puis effectue un `git clone --mirror` suivi
-   d'un `git push --mirror` (toutes les branches, tags et tout l'historique),
-   et aligne la branche par défaut.
-4. À la fin, affiche un résumé (synchronisés / ignorés / échecs) et sort avec un code d'erreur si un dépôt a échoué, pour que ce soit visible dans Actions.
+## Prerequisites
 
-⚠️ **Le dépôt GitLab devient une copie exacte de GitHub.** Ne modifiez jamais
-directement le code côté GitLab : tout changement y serait écrasé (ou
-supprimé) à la prochaine synchronisation.
+- [Go](https://go.dev) 1.24+
+- [golangci-lint](https://golangci-lint.run) (for linting)
+- GitHub Personal Access Token (classic) with scopes: `repo`, `read:org`, `workflow`
+- GitLab Personal Access Token with scope: `api`
+- A GitLab group to host the mirrored repositories
 
-## Mise en place
+## Setup
 
-### 1. Créer ce dépôt
-Créez un nouveau dépôt GitHub (privé de préférence, puisqu'il contiendra la
-configuration de cette automatisation) et ajoutez-y les fichiers de ce
-projet.
+### 1. Create this repository
 
-### 2. Créer un groupe GitLab de destination
-Créez un **groupe** GitLab vide (ex. `github-mirror`) qui accueillera tous
-les projets miroirs. Le script a besoin d'un groupe existant, pas d'un
-namespace personnel.
+Create a new GitHub repository (preferably private, since it contains the
+automation configuration) and add this project's files to it.
 
-### 3. Générer les jetons d'accès
+### 2. Create a destination GitLab group
 
-**Token GitHub** — Settings → Developer settings → Personal access tokens →
-Tokens (classic), avec les scopes :
-- `repo` (accès complet aux dépôts, y compris privés)
-- `read:org` (lister les dépôts des organisations)
+Create an empty GitLab **group** (e.g. `github-mirror`) that will host all
+mirrored projects. The tool needs an existing group, not a personal namespace.
 
-**Token GitLab** — Preferences → Access Tokens, avec le scope :
+### 3. Generate access tokens
+
+**GitHub token** — Settings → Developer settings → Personal access tokens →
+Tokens (classic), with scopes:
+
+- `repo` (full access to repositories, including private)
+- `read:org` (list organization repositories)
+- `workflow` (required to push workflow files to this repository)
+
+**GitLab token** — Preferences → Access Tokens, with scope:
+
 - `api`
 
-### 4. Configurer secrets et variables
+### 4. Configure secrets and variables
 
-Dans **Settings → Secrets and variables → Actions** du nouveau dépôt GitHub :
+In the GitHub repository **Settings → Secrets and variables → Actions**:
 
-**Secrets** (onglet *Secrets*) :
-| Nom | Valeur |
-|---|---|
-| `GH_PAT` | le token GitHub de l'étape 3 |
-| `GITLAB_TOKEN` | le token GitLab de l'étape 3 |
+**Secrets** (*Secrets* tab):
 
-**Variables** (onglet *Variables*) :
-| Nom | Valeur |
-|---|---|
-| `GITLAB_GROUP` | chemin complet du groupe GitLab cible (ex. `mon-groupe` ou `mon-groupe/sous-groupe`) |
-| `GITLAB_HOST` | optionnel — hôte GitLab si instance auto-hébergée (par défaut `gitlab.com`) |
+| Name | Value |
+| ---- | ----- |
+| `GH_PAT` | GitHub token from step 3 |
+| `GITLAB_TOKEN` | GitLab token from step 3 |
 
-### 5. Premier lancement
+**Variables** (*Variables* tab):
 
-Onglet **Actions** → workflow *Mirror GitHub → GitLab* → **Run workflow**,
-pour tester avant d'attendre le déclenchement automatique du lendemain.
+| Name | Value |
+| ---- | ----- |
+| `GITLAB_GROUP` | Full path of the target GitLab group (e.g. `my-group` or `my-group/subgroup`) |
+| `GITLAB_HOST` | Optional — GitLab host for self-hosted instances (defaults to `gitlab.com`) |
 
-## ⚠️ Point d'attention : désactivation par inactivité
+### 5. First run
 
-GitHub désactive automatiquement les workflows planifiés (`schedule`) d'un
-dépôt public resté sans activité pendant 60 jours (et le même comportement
-est régulièrement rapporté sur des dépôts privés). Comme ce dépôt ne reçoit
-jamais de commit par lui-même, le workflow risque de s'arrêter silencieusement
-au bout de deux mois. Deux options :
+Go to **Actions** → *Mirror GitHub → GitLab* workflow → **Run workflow**,
+to test before waiting for the next daily trigger.
 
-- Repassez de temps en temps sur l'onglet **Actions** pour vérifier qu'il est
-  toujours *Enabled*, et cliquez sur **Enable workflow** si besoin.
-- Ou ajoutez un commit occasionnel (par exemple sur ce README), ce qui
-  réinitialise le compteur d'inactivité.
+## Usage
 
-## Aller plus loin
+### Build
 
-- **Parallélisme** : le nombre de workers (goroutines qui synchronisent en parallèle) est configurable via la variable `WORKERS` (défaut : 5).
-- **Timeout** : configurable dans `main.go` (par défaut 30 minutes).
-- **Notifications** : une étape `if: failure()` peut poster sur Slack/e-mail en cas d'échec.
-- **Exclure les forks** : ajouter un filtre `!r.GetFork()` dans `internal/github/client.go`.
+```bash
+go build -o mirror .
+```
 
-N'hésitez pas à demander si vous voulez une de ces variantes.
+### Run
+
+```bash
+GH_PAT=<github-token> GITLAB_TOKEN=<gitlab-token> GITLAB_GROUP=my-group go run .
+```
+
+Optional environment variables:
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `GITLAB_HOST` | `gitlab.com` | GitLab host for self-hosted instances |
+| `WORKERS` | `5` | Number of concurrent goroutines syncing repos |
+
+### Test
+
+```bash
+go test ./...
+```
+
+### Lint
+
+```bash
+golangci-lint run ./...
+```
+
+### Format
+
+```bash
+go fmt ./...
+```
+
+## How it works
+
+The GitHub Actions workflow (`.github/workflows/mirror-to-gitlab.yml`) runs
+the Go binary daily at 03:00 UTC (and on demand from the **Actions** tab).
+The binary:
+
+1. Lists all repositories accessible to the token (owner + organization
+   member), public and private, via the GitHub API.
+2. For each repository, compares Git refs between GitHub and GitLab — if
+   they are identical, the repository is skipped without cloning or
+   transferring.
+3. Otherwise: creates the GitLab project if it doesn't exist yet (with the
+   same visibility as on GitHub), performs a mirror clone and mirror push
+   (all branches, tags, and history), and aligns the default branch.
+4. Displays a summary (synced / skipped / failed) and exits with code 1 if
+   any repository failed, so it's visible in Actions.
+
+> **The GitLab repository becomes an exact copy of GitHub.** Never modify
+> code directly on GitLab: any change will be overwritten (or deleted) on
+> the next sync.
+
+## Important: workflow disabling due to inactivity
+
+GitHub automatically disables scheduled workflows (`schedule`) for public
+repositories that have been inactive for 60 days (the same behavior is
+regularly reported for private repositories). Since this repository may
+never receive commits on its own, the workflow could silently stop after
+two months. Two options:
+
+- Periodically check the **Actions** tab to ensure it is still *Enabled*,
+  and click **Enable workflow** if needed.
+- Add an occasional commit (e.g. to this README), which resets the
+  inactivity counter.
+
+## Going further
+
+- **Concurrency**: the number of worker goroutines syncing in parallel is
+  configurable via the `WORKERS` variable (default: 5).
+- **Timeout**: configurable in `main.go` (default 30 minutes).
+- **Notifications**: add a `if: failure()` step to post to Slack or email
+  on failure.
+- **Exclude forks**: add a `!r.GetFork()` filter in
+  `internal/github/client.go`.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
