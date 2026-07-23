@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -316,6 +317,7 @@ func (syncer *Syncer) syncRepository(
 	defer func() { _ = os.RemoveAll(temporaryDirectory) }()
 
 	var cloneDirectory string = temporaryDirectory + "/repo.git"
+	log.Printf("start clone for %q", repository.FullName)
 	var cloneError error = syncer.mirrorClient.MirrorClone(
 		requestContext,
 		githubURL,
@@ -330,7 +332,9 @@ func (syncer *Syncer) syncRepository(
 			Err:    fmt.Errorf("mirror clone: %w", cloneError),
 		}
 	}
+	log.Printf("done clone for %q", repository.FullName)
 
+	log.Printf("start lfs for %q", repository.FullName)
 	var lfsError error = syncer.mirrorClient.MirrorLFS(
 		requestContext,
 		cloneDirectory,
@@ -348,7 +352,9 @@ func (syncer *Syncer) syncRepository(
 			Err:    fmt.Errorf("mirror lfs: %w", lfsError),
 		}
 	}
+	log.Printf("done lfs for %q", repository.FullName)
 
+	log.Printf("start push for %q", repository.FullName)
 	var pushError error = syncer.mirrorClient.MirrorPush(
 		requestContext,
 		cloneDirectory,
@@ -363,6 +369,7 @@ func (syncer *Syncer) syncRepository(
 			Err:    fmt.Errorf("mirror push: %w", pushError),
 		}
 	}
+	log.Printf("done push for %q", repository.FullName)
 
 	var defaultBranchError error = syncer.gitlabClient.SetDefaultBranch(
 		requestContext,

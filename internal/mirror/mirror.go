@@ -139,12 +139,18 @@ func (client *Client) MirrorPush(
 		authentication = &http.BasicAuth{Username: user, Password: token}
 	}
 
+	var progress *redactingProgress = &redactingProgress{
+		writer:  os.Stderr,
+		secrets: []string{token},
+	}
+
 	var pushError error = remote.PushContext(
 		requestContext,
 		&git.PushOptions{
 			Auth:       authentication,
 			RemoteName: remote.Config().Name,
 			RefSpecs:   []config.RefSpec{"+refs/*:refs/*"},
+			Progress:   progress,
 		},
 	)
 	if pushError != nil && !errors.Is(pushError, git.NoErrAlreadyUpToDate) {
@@ -352,4 +358,29 @@ func redactSecrets(text string, secrets ...string) string {
 		text = strings.ReplaceAll(text, secret, "[REDACTED]")
 	}
 	return text
+}
+
+// redactingProgress is an io.Writer passed to go-git's PushOptions.Progress
+// so every sideband progress message the remote emits (for GitLab the
+// "remote: GitLab: <reason>" lines explaining a pre-receive hook
+// rejection) is forwarded to the parent process's stderr with
+// credentials redacted. go-git normally drops this stream, leaving only
+// "pre-receive hook declined" without the actionable explanation.
+type redactingProgress struct {
+	writer  *os.File
+	secrets []string
+}
+
+// Write redacts secrets from chunk and forwards it verbatim (preserving
+// line breaks and the leading "remote: " prefix go-git adds) to the
+// underlying writer.
+func (progress *redactingProgress) Write(chunk []byte) (int, error) {
+	var redacted string = redactSecrets(string(chunk), progress.secrets...)
+	var bytesWritten int
+	var writeError error
+	bytesWritten, writeError = progress.writer.Write([]byte(redacted))
+	if writeError != nil {
+		return bytesWritten, writeError
+	}
+	return len(chunk), nil
 }
