@@ -2,10 +2,13 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"sync"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/maximedrn/github-to-gitlab-mirror/internal/github"
 	"github.com/maximedrn/github-to-gitlab-mirror/internal/gitlab"
@@ -254,6 +257,12 @@ func (syncer *Syncer) syncRepository(
 		githubToken,
 	)
 	if githubReferencesError != nil {
+		if errors.Is(githubReferencesError, transport.ErrEmptyRemoteRepository) {
+			return SyncResult{
+				Repo:   repository.FullName,
+				Status: StatusSkipped,
+			}
+		}
 		return SyncResult{
 			Repo:   repository.FullName,
 			Status: StatusFailed,

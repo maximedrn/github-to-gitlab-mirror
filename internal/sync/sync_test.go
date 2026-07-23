@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
 	"github.com/maximedrn/github-to-gitlab-mirror/internal/github"
 	"github.com/maximedrn/github-to-gitlab-mirror/internal/gitlab"
 	"github.com/maximedrn/github-to-gitlab-mirror/internal/sync"
@@ -81,6 +83,7 @@ func (fake *fakeGitLab) SetDefaultBranch(
 // every MirrorLFS call so tests can assert the LFS step is invoked.
 type fakeMirror struct {
 	referencesByURL map[string]map[string]string
+	referencesError map[string]error
 	lfsCalls        []lfsCall
 	lfsError        error
 }
@@ -93,13 +96,19 @@ type lfsCall struct {
 	target    string
 }
 
-// GetRefs returns the pre-registered ref map for the given URL, or an
-// empty map when no map is registered.
+// GetRefs returns the pre-registered error for the URL when one is
+// registered, the pre-registered ref map when one is registered, or an
+// empty map with no error otherwise.
 func (fake *fakeMirror) GetRefs(
 	requestContext context.Context, remoteURL, user, token string,
 ) (map[string]string, error) {
-	var references map[string]string
+	var registeredError error
 	var exists bool
+	registeredError, exists = fake.referencesError[remoteURL]
+	if exists {
+		return nil, registeredError
+	}
+	var references map[string]string
 	references, exists = fake.referencesByURL[remoteURL]
 	if exists {
 		return references, nil
@@ -468,5 +477,64 @@ func TestSync_GitHubError(test *testing.T) {
 			"Expected error to contain 'Network error', got %v",
 			results[0].Err,
 		)
+	}
+}
+
+// TestSync_SkipsEmptyGitHubRepository verifies that a repository whose
+// GitHub remote advertises no refs (an empty repository, surfaced by
+// go-git as transport.ErrEmptyRemoteRepository) is reported as skipped
+// rather than failed, and does not trigger project creation or a push.
+func TestSync_SkipsEmptyGitHubRepository(test *testing.T) {
+	var requestContext context.Context = context.Background()
+
+	var githubStub *fakeGitHub = &fakeGitHub{
+		repositories: []github.Repository{
+			{
+				FullName:      "user/empty-repo",
+				Private:       false,
+				DefaultBranch: "main",
+			},
+		},
+	}
+
+	var gitlabStub *fakeGitLab = &fakeGitLab{
+		group: gitlab.GroupInfo{
+			ID:       42,
+			FullPath: "my-group",
+		},
+		createdProjects: make(map[string]bool),
+	}
+
+	var mirrorStub *fakeMirror = &fakeMirror{
+		referencesError: map[string]error{
+			"https://github.com/user/empty-repo.git": transport.ErrEmptyRemoteRepository,
+		},
+	}
+
+	var syncer *sync.Syncer = sync.New(
+		githubStub,
+		gitlabStub,
+		mirrorStub,
+		2,
+	)
+	var results []sync.SyncResult = syncer.Sync(
+		requestContext,
+		"my-group",
+		"gh-token",
+		"gl-token",
+		"gitlab.com",
+	)
+
+	if len(results) != 1 {
+		test.Fatalf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != sync.StatusSkipped {
+		test.Errorf(
+			"Expected StatusSkipped, got %v",
+			results[0].Status,
+		)
+	}
+	if len(gitlabStub.createdProjects) != 0 {
+		test.Error("Expected no project to be created for empty repo")
 	}
 }

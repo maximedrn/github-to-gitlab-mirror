@@ -174,10 +174,6 @@ func (client *Client) MirrorPush(
 // credentials are injected into the target URL passed to the LFS push.
 // Both live only in the temporary clone directory, which is removed by
 // the caller once the synchronization completes.
-//
-// The stderr of git lfs fetch/push is forwarded to the parent process's
-// stderr (with credentials redacted) so that the Actions log shows how
-// many objects were transferred.
 func (client *Client) MirrorLFS(
 	requestContext context.Context,
 	repositoryDirectory,
@@ -232,7 +228,6 @@ func (client *Client) MirrorLFS(
 		"fetch",
 		"--all",
 	)
-	logLFSDiagnostics(os.Stderr, "lfs fetch", fetchStdout, fetchStderr, secrets)
 	if fetchError != nil {
 		return fmt.Errorf(
 			"lfs fetch: %s%s: %w",
@@ -263,7 +258,6 @@ func (client *Client) MirrorLFS(
 		"--all",
 		credentialsTargetURL,
 	)
-	logLFSDiagnostics(os.Stderr, "lfs push", pushStdout, pushStderr, secrets)
 	if lfsPushError != nil {
 		return fmt.Errorf(
 			"lfs push: %s%s: %w",
@@ -274,26 +268,6 @@ func (client *Client) MirrorLFS(
 	}
 
 	return nil
-}
-
-// logLFSDiagnostics writes a labeled, indented dump of the captured
-// stdout and stderr to the process's os.Stderr (with secrets redacted)
-// so that the Actions log reveals what git-lfs transferred for each
-// repository. It is a no-op when both outputs are empty.
-func logLFSDiagnostics(
-	writer *os.File, label string,
-	stdout, stderr []byte, secrets []string,
-) {
-	var combined string = string(stdout) + string(stderr)
-	var redacted string = redactSecrets(combined, secrets...)
-	var trimmed string = strings.TrimSpace(redacted)
-	if trimmed == "" {
-		return
-	}
-	var line string
-	for _, line = range strings.Split(trimmed, "\n") {
-		_, _ = fmt.Fprintf(writer, "    [%s] %s\n", label, line)
-	}
 }
 
 // lfsInstalled reports whether the git-lfs extension is available on the
