@@ -202,7 +202,9 @@ func maskQuotedSlashPath(quotedPath string) string {
 
 // maskURL returns fullURL with every non-empty path segment obfuscated
 // via maskSegment while preserving the scheme, the host, and any query
-// or fragment. Trailing punctuation frequently added by error
+// or fragment. Any embedded userinfo (user:password@) is dropped so
+// credentials carried in the URL, for example by git-lfs error output,
+// never appear in logs. Trailing punctuation frequently added by error
 // formatters (":", ",", ".", ";", ")", "]", "}") is kept outside the
 // mask so the surrounding message remains readable. When fullURL has no
 // scheme separator or no path it is returned unchanged.
@@ -222,6 +224,10 @@ func maskURL(fullURL string) string {
 	var pathStart int = hostStart + relativePathStart
 	var schemeAndHost string = trimmedURL[:pathStart]
 	var pathAndSuffix string = trimmedURL[pathStart:]
+
+	if atSign := strings.LastIndex(schemeAndHost, "@"); atSign >= 0 {
+		schemeAndHost = schemeAndHost[:hostStart] + schemeAndHost[atSign+1:]
+	}
 
 	var suffixStart int = strings.IndexAny(pathAndSuffix, "?#")
 	var path string = pathAndSuffix

@@ -14,6 +14,7 @@ Daily automatic synchronization of all your GitHub repositories (personal and or
 ## Prerequisites
 
 - [Go](https://go.dev)
+- [Git](https://git-scm.com) with [Git LFS](https://git-lfs.com)
 - [golangci-lint](https://golangci-lint.run) (for linting)
 - [golines](https://github.com/segmentio/golines) (for formatting)
 - GitHub Personal Access Token (classic) with scopes: `repo`, `read:org`, `workflow`

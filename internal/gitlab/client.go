@@ -78,9 +78,10 @@ func (client *Client) ResolveGroup(
 }
 
 // EnsureProject creates the project named name inside the group described
-// by group when it does not exist. Existing projects are left untouched.
-// The private flag controls the visibility used when the project is
-// created (private when true, public otherwise).
+// by group when it does not exist. New projects are created with Git LFS
+// enabled so that repositories using Git LFS can be mirrored. Existing
+// projects are left untouched. The private flag controls the visibility
+// used when the project is created (private when true, public otherwise).
 func (client *Client) EnsureProject(
 	requestContext context.Context,
 	group GroupInfo,
@@ -114,9 +115,10 @@ func (client *Client) EnsureProject(
 	var createError error
 	_, _, createError = client.client.Projects.CreateProject(
 		&gl.CreateProjectOptions{
-			Name:        gl.Ptr(name),
-			NamespaceID: gl.Ptr(group.ID),
-			Visibility:  gl.Ptr(visibility),
+			Name:        new(name),
+			NamespaceID: new(group.ID),
+			Visibility:  new(visibility),
+			LFSEnabled:  new(true),
 		},
 		gl.WithContext(requestContext),
 	)
@@ -138,7 +140,7 @@ func (client *Client) SetDefaultBranch(
 	_, _, editError = client.client.Projects.EditProject(
 		projectPath,
 		&gl.EditProjectOptions{
-			DefaultBranch: gl.Ptr(branch),
+			DefaultBranch: new(branch),
 		},
 		gl.WithContext(requestContext),
 	)

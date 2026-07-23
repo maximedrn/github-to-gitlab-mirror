@@ -77,9 +77,20 @@ func (fake *fakeGitLab) SetDefaultBranch(
 }
 
 // fakeMirror is a stub implementation of sync.MirrorClient that returns
-// pre-registered ref maps and no-op clone/push operations.
+// pre-registered ref maps and no-op clone/push operations. It records
+// every MirrorLFS call so tests can assert the LFS step is invoked.
 type fakeMirror struct {
 	referencesByURL map[string]map[string]string
+	lfsCalls        []lfsCall
+	lfsError        error
+}
+
+// lfsCall records the directory and the source/target URLs passed to a
+// single MirrorLFS invocation.
+type lfsCall struct {
+	directory string
+	source    string
+	target    string
 }
 
 // GetRefs returns the pre-registered ref map for the given URL, or an
@@ -101,6 +112,24 @@ func (fake *fakeMirror) MirrorClone(
 	requestContext context.Context,
 	remoteURL, user, token, destinationDirectory string,
 ) error {
+	return nil
+}
+
+// MirrorLFS records the invocation and returns the stubbed lfsError, or
+// nil when none is registered.
+func (fake *fakeMirror) MirrorLFS(
+	requestContext context.Context,
+	repositoryDirectory, sourceURL, sourceUser, sourceToken,
+	targetURL, targetUser, targetToken string,
+) error {
+	if fake.lfsError != nil {
+		return fake.lfsError
+	}
+	fake.lfsCalls = append(fake.lfsCalls, lfsCall{
+		directory: repositoryDirectory,
+		source:    sourceURL,
+		target:    targetURL,
+	})
 	return nil
 }
 
@@ -230,6 +259,91 @@ func TestSync_SyncsWhenRefsDiffer(test *testing.T) {
 	}
 	if !gitlabStub.createdProjects["my-group/repository-1"] {
 		test.Error("Expected repository-1 to be created")
+	}
+	if len(mirrorStub.lfsCalls) != 1 {
+		test.Fatalf(
+			"Expected 1 LFS call, got %d",
+			len(mirrorStub.lfsCalls),
+		)
+	}
+	var expectedSource string = "https://github.com/user/repository-1.git"
+	var expectedTarget string = "https://gitlab.com/my-group/repository-1.git"
+	if mirrorStub.lfsCalls[0].source != expectedSource {
+		test.Errorf(
+			"Expected LFS source %q, got %q",
+			expectedSource,
+			mirrorStub.lfsCalls[0].source,
+		)
+	}
+	if mirrorStub.lfsCalls[0].target != expectedTarget {
+		test.Errorf(
+			"Expected LFS target %q, got %q",
+			expectedTarget,
+			mirrorStub.lfsCalls[0].target,
+		)
+	}
+}
+
+// TestSync_LFSErrorReportsFailed verifies that a failure returned by
+// MirrorLFS is surfaced as a StatusFailed result whose error mentions the
+// LFS step.
+func TestSync_LFSErrorReportsFailed(test *testing.T) {
+	var requestContext context.Context = context.Background()
+
+	var githubStub *fakeGitHub = &fakeGitHub{
+		repositories: []github.Repository{
+			{
+				FullName:      "user/repository-1",
+				Private:       false,
+				DefaultBranch: "main",
+			},
+		},
+	}
+
+	var gitlabStub *fakeGitLab = &fakeGitLab{
+		group: gitlab.GroupInfo{
+			ID:       42,
+			FullPath: "my-group",
+		},
+		createdProjects: make(map[string]bool),
+	}
+
+	var mirrorStub *fakeMirror = &fakeMirror{
+		referencesByURL: map[string]map[string]string{
+			"https://github.com/user/repository-1.git": {
+				"refs/heads/main": "abc123",
+			},
+			"https://gitlab.com/my-group/repository-1.git": {},
+		},
+		lfsError: errors.New("lfs fetch boom"),
+	}
+
+	var syncer *sync.Syncer = sync.New(githubStub, gitlabStub, mirrorStub, 2)
+	var results []sync.SyncResult = syncer.Sync(
+		requestContext,
+		"my-group",
+		"gh-token",
+		"gl-token",
+		"gitlab.com",
+	)
+
+	if len(results) != 1 {
+		test.Fatalf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != sync.StatusFailed {
+		test.Errorf("Expected StatusFailed, got %v", results[0].Status)
+	}
+	if !strings.Contains(results[0].Err.Error(), "mirror lfs") {
+		test.Errorf(
+			"Expected error to mention 'mirror lfs', got %v",
+			results[0].Err,
+		)
+	}
+	if !strings.Contains(results[0].Err.Error(), "lfs fetch boom") {
+		test.Errorf(
+			"Expected error to contain 'lfs fetch boom', got %v",
+			results[0].Err,
+		)
 	}
 }
 

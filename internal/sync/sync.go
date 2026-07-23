@@ -71,6 +71,12 @@ type MirrorClient interface {
 		requestContext context.Context,
 		remoteURL, user, token, destinationDirectory string,
 	) error
+	MirrorLFS(
+		requestContext context.Context,
+		repositoryDirectory,
+		sourceURL, sourceUser, sourceToken,
+		targetURL, targetUser, targetToken string,
+	) error
 	MirrorPush(
 		requestContext context.Context,
 		repositoryDirectory, remoteURL, user, token string,
@@ -216,8 +222,9 @@ func (syncer *Syncer) worker(
 // GitLab group. It compares the remote refs first and returns
 // StatusSkipped when the GitHub and GitLab sides advertise the same
 // hashes. Otherwise it ensures the destination project exists, performs
-// a mirror clone from GitHub and a mirror push to GitLab, then updates
-// the default branch on the GitLab side.
+// a mirror clone from GitHub, synchronizes Git LFS objects from GitHub
+// to GitLab, performs a mirror push to GitLab, then updates the default
+// branch on the GitLab side.
 func (syncer *Syncer) syncRepository(
 	requestContext context.Context,
 	group gitlab.GroupInfo,
@@ -321,6 +328,24 @@ func (syncer *Syncer) syncRepository(
 			Repo:   repository.FullName,
 			Status: StatusFailed,
 			Err:    fmt.Errorf("mirror clone: %w", cloneError),
+		}
+	}
+
+	var lfsError error = syncer.mirrorClient.MirrorLFS(
+		requestContext,
+		cloneDirectory,
+		githubURL,
+		"x-access-token",
+		githubToken,
+		gitlabURL,
+		"oauth2",
+		gitlabToken,
+	)
+	if lfsError != nil {
+		return SyncResult{
+			Repo:   repository.FullName,
+			Status: StatusFailed,
+			Err:    fmt.Errorf("mirror lfs: %w", lfsError),
 		}
 	}
 
