@@ -120,7 +120,8 @@ func TestEnsureProject_CreatesWhenNotFound(test *testing.T) {
 }
 
 // TestEnsureProject_SkipsWhenExists verifies that EnsureProject does not
-// issue any POST request when the target project already exists.
+// issue any POST or PUT request when the target project already exists
+// and has Git LFS enabled.
 func TestEnsureProject_SkipsWhenExists(test *testing.T) {
 	var requestContext context.Context = context.Background()
 
@@ -129,7 +130,11 @@ func TestEnsureProject_SkipsWhenExists(test *testing.T) {
 			if request.Method == "GET" &&
 				request.URL.Path == "/api/v4/projects/my-group/my-repo" {
 				var encodeError error = json.NewEncoder(writer).Encode(
-					map[string]any{"id": 1, "name": "my-repo"},
+					map[string]any{
+						"id":          1,
+						"name":        "my-repo",
+						"lfs_enabled": true,
+					},
 				)
 				if encodeError != nil {
 					test.Fatalf("Encode response: %v", encodeError)
@@ -137,7 +142,10 @@ func TestEnsureProject_SkipsWhenExists(test *testing.T) {
 				return
 			}
 			if request.Method == "POST" {
-				test.Error("Expected POST request when project does not exist")
+				test.Error("Expected no POST request when project exists")
+			}
+			if request.Method == "PUT" {
+				test.Error("Expected no PUT request when LFS already enabled")
 			}
 			writer.WriteHeader(404)
 		}))
@@ -161,6 +169,90 @@ func TestEnsureProject_SkipsWhenExists(test *testing.T) {
 	)
 	if ensureError != nil {
 		test.Fatalf("EnsureProject: %v", ensureError)
+	}
+}
+
+// TestEnsureProject_EnablesLFSWhenExists verifies that EnsureProject issues
+// a PUT to enable Git LFS when the target project already exists but has
+// Git LFS disabled (for instance a project created by a previous run of
+// the tool before LFS was turned on by default).
+func TestEnsureProject_EnablesLFSWhenExists(test *testing.T) {
+	var requestContext context.Context = context.Background()
+	var lfsEnabled bool = false
+
+	var server *httptest.Server = httptest.NewServer(http.HandlerFunc(
+		func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == "GET" &&
+				request.URL.Path == "/api/v4/projects/my-group/my-repo" {
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]any{
+						"id":          1,
+						"name":        "my-repo",
+						"lfs_enabled": lfsEnabled,
+					},
+				)
+				if encodeError != nil {
+					test.Fatalf("Encode response: %v", encodeError)
+				}
+				return
+			}
+			if request.Method == "PUT" &&
+				request.URL.Path == "/api/v4/projects/my-group/my-repo" {
+				var payload struct {
+					LFSEnabled bool `json:"lfs_enabled"`
+				}
+				var decodeError error = json.NewDecoder(request.Body).Decode(
+					&payload,
+				)
+				if decodeError != nil {
+					test.Fatalf("Decode request body: %v", decodeError)
+				}
+				if !payload.LFSEnabled {
+					test.Error(
+						"Expected lfs_enabled=true in request body",
+					)
+				}
+				lfsEnabled = true
+				var encodeError error = json.NewEncoder(writer).Encode(
+					map[string]any{
+						"id":          1,
+						"name":        "my-repo",
+						"lfs_enabled": true,
+					},
+				)
+				if encodeError != nil {
+					test.Fatalf("Encode response: %v", encodeError)
+				}
+				return
+			}
+			if request.Method == "POST" {
+				test.Error("Expected no POST request when project exists")
+			}
+			writer.WriteHeader(404)
+		}))
+	defer server.Close()
+
+	var client *gitlab.Client
+	var clientError error
+	client, clientError = gitlab.NewClientWithURL("test-token", server.URL)
+	if clientError != nil {
+		test.Fatalf("NewClientWithURL: %v", clientError)
+	}
+	var group gitlab.GroupInfo = gitlab.GroupInfo{
+		ID:       42,
+		FullPath: "my-group",
+	}
+	var ensureError error = client.EnsureProject(
+		requestContext,
+		group,
+		"my-repo",
+		false,
+	)
+	if ensureError != nil {
+		test.Fatalf("EnsureProject: %v", ensureError)
+	}
+	if !lfsEnabled {
+		test.Error("Expected LFS to be enabled via PUT")
 	}
 }
 

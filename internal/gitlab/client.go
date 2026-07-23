@@ -78,10 +78,11 @@ func (client *Client) ResolveGroup(
 }
 
 // EnsureProject creates the project named name inside the group described
-// by group when it does not exist. New projects are created with Git LFS
-// enabled so that repositories using Git LFS can be mirrored. Existing
-// projects are left untouched. The private flag controls the visibility
-// used when the project is created (private when true, public otherwise).
+// by group when it does not exist, or enables Git LFS on the existing
+// project when it is currently disabled. Both new and existing projects
+// end up with Git LFS enabled so that repositories using Git LFS can be
+// mirrored. The private flag controls the visibility used when the
+// project is created (private when true, public otherwise).
 func (client *Client) EnsureProject(
 	requestContext context.Context,
 	group GroupInfo,
@@ -90,15 +91,16 @@ func (client *Client) EnsureProject(
 ) error {
 	var fullPath string = group.FullPath + "/" + name
 
+	var project *gl.Project
 	var response *gl.Response
 	var getError error
-	_, response, getError = client.client.Projects.GetProject(
+	project, response, getError = client.client.Projects.GetProject(
 		fullPath,
 		nil,
 		gl.WithContext(requestContext),
 	)
 	if getError == nil {
-		return nil
+		return client.ensureLFS(project, fullPath, requestContext)
 	}
 	if response == nil {
 		return fmt.Errorf("Get project %q: %w", fullPath, getError)
@@ -123,10 +125,44 @@ func (client *Client) EnsureProject(
 		gl.WithContext(requestContext),
 	)
 	if createError != nil {
-		if strings.Contains(createError.Error(), "has already been taken") {
-			return nil
+		if !strings.Contains(createError.Error(), "has already been taken") {
+			return fmt.Errorf("Create project %q: %w", fullPath, createError)
 		}
-		return fmt.Errorf("Create project %q: %w", fullPath, createError)
+		// Race: another worker created the project between our Get and
+		// Create. Re-fetch it and ensure Git LFS is enabled before
+		// returning so the receiver can mirror LFS-using repositories.
+		var raceProject *gl.Project
+		var raceError error
+		raceProject, _, raceError = client.client.Projects.GetProject(
+			fullPath,
+			nil,
+			gl.WithContext(requestContext),
+		)
+		if raceError != nil {
+			return fmt.Errorf("Re-get project %q: %w", fullPath, raceError)
+		}
+		return client.ensureLFS(raceProject, fullPath, requestContext)
+	}
+	return nil
+}
+
+// ensureLFS enables Git LFS on the project identified by fullPath when it
+// is currently disabled. It returns nil when LFS is already enabled or
+// after a successful EditProject call.
+func (client *Client) ensureLFS(
+	project *gl.Project, fullPath string, requestContext context.Context,
+) error {
+	if project.LFSEnabled {
+		return nil
+	}
+	var editError error
+	_, _, editError = client.client.Projects.EditProject(
+		fullPath,
+		&gl.EditProjectOptions{LFSEnabled: new(true)},
+		gl.WithContext(requestContext),
+	)
+	if editError != nil {
+		return fmt.Errorf("Enable LFS for %q: %w", fullPath, editError)
 	}
 	return nil
 }
