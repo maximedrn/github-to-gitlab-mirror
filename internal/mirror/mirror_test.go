@@ -432,11 +432,44 @@ func TestMirrorLFS_NoopForNonLFSRepository(test *testing.T) {
 		test.Fatalf("MirrorLFS on non-LFS repo: %v", lfsError)
 	}
 
-	// No LFS object directory should have been created in the clone.
-	var cloneLFS string = filepath.Join(cloneDirectory, "lfs")
+	// No LFS objects should be present in the clone even though the lfs
+	// storage directory may have been initialized by the fetch call.
+	var cloneLFS string = filepath.Join(cloneDirectory, "lfs", "objects")
 	if _, statError := os.Stat(cloneLFS); statError == nil {
-		test.Errorf("Unexpected lfs directory in non-LFS clone")
+		var objects []string
+		var walkError error
+		objects, walkError = listFiles(cloneLFS)
+		if walkError != nil {
+			test.Fatalf("list lfs objects: %v", walkError)
+		}
+		if len(objects) != 0 {
+			test.Errorf(
+				"Expected no LFS objects in non-LFS clone, got %d: %v",
+				len(objects),
+				objects,
+			)
+		}
 	}
+}
+
+// listFiles walks root recursively and returns the file paths it contains.
+func listFiles(root string) ([]string, error) {
+	var paths []string
+	var walkError error = filepath.Walk(root,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				paths = append(paths, path)
+			}
+			return nil
+		},
+	)
+	if walkError != nil {
+		return nil, walkError
+	}
+	return paths, nil
 }
 
 // writeFileContent writes content to the file at path, aborting the

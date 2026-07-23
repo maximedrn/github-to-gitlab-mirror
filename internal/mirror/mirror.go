@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -154,18 +156,22 @@ func (client *Client) MirrorPush(
 // MirrorLFS synchronizes the Git LFS objects of the bare repository located
 // at repositoryDirectory from the source remote reachable at sourceURL to
 // the target remote reachable at targetURL. It is a no-op when Git LFS is
-// not installed on the host, when the repository does not use Git LFS, or
-// when the source or target remotes do not require authentication (user
-// empty). Otherwise it fetches every LFS object from the source remote into
-// the local bare repository and then pushes every LFS object to the target
-// remote so that the subsequent mirror push of the refs is not rejected by
-// the target's pre-receive hook.
+// not installed on the host or when the repository does not use Git LFS
+// (git lfs fetch/push are no-ops in that case). Otherwise it fetches every
+// LFS object from the source remote into the local bare repository and
+// then pushes every LFS object to the target remote so that the subsequent
+// mirror push of the refs is not rejected by the target's pre-receive
+// hook.
 //
 // The source credentials are injected into the origin remote URL of the
 // bare repository for the duration of the fetch, and the target
 // credentials are injected into the target URL passed to the LFS push.
 // Both live only in the temporary clone directory, which is removed by
 // the caller once the synchronization completes.
+//
+// The stderr of git lfs fetch/push is forwarded to the parent process's
+// stderr (with credentials redacted) so that the Actions log shows how
+// many objects were transferred.
 func (client *Client) MirrorLFS(
 	requestContext context.Context,
 	repositoryDirectory,
@@ -173,16 +179,10 @@ func (client *Client) MirrorLFS(
 	targetURL, targetUser, targetToken string,
 ) error {
 	if !client.lfsInstalled() {
-		return nil
-	}
-
-	var used bool
-	var detectError error
-	used, detectError = client.lfsUsed(requestContext, repositoryDirectory)
-	if detectError != nil {
-		return fmt.Errorf("detect lfs: %w", detectError)
-	}
-	if !used {
+		log.Printf(
+			"lfs: git-lfs not installed on host, skipping LFS sync for %s",
+			repositoryDirectory,
+		)
 		return nil
 	}
 
@@ -217,18 +217,20 @@ func (client *Client) MirrorLFS(
 		)
 	}
 
-	var _, fetchStderr []byte
+	var fetchStdout, fetchStderr []byte
 	var fetchError error
-	_, fetchStderr, fetchError = runGit(
+	fetchStdout, fetchStderr, fetchError = runGit(
 		requestContext,
 		repositoryDirectory,
 		"lfs",
 		"fetch",
 		"--all",
 	)
+	logLFSDiagnostics(os.Stderr, "lfs fetch", fetchStdout, fetchStderr, secrets)
 	if fetchError != nil {
 		return fmt.Errorf(
-			"lfs fetch: %s: %w",
+			"lfs fetch: %s%s: %w",
+			redactSecrets(string(fetchStdout), secrets...),
 			redactSecrets(string(fetchStderr), secrets...),
 			fetchError,
 		)
@@ -245,9 +247,9 @@ func (client *Client) MirrorLFS(
 		return fmt.Errorf("build target url: %w", targetURLError)
 	}
 
-	var _, pushStderr []byte
+	var pushStdout, pushStderr []byte
 	var lfsPushError error
-	_, pushStderr, lfsPushError = runGit(
+	pushStdout, pushStderr, lfsPushError = runGit(
 		requestContext,
 		repositoryDirectory,
 		"lfs",
@@ -255,15 +257,37 @@ func (client *Client) MirrorLFS(
 		"--all",
 		credentialsTargetURL,
 	)
+	logLFSDiagnostics(os.Stderr, "lfs push", pushStdout, pushStderr, secrets)
 	if lfsPushError != nil {
 		return fmt.Errorf(
-			"lfs push: %s: %w",
+			"lfs push: %s%s: %w",
+			redactSecrets(string(pushStdout), secrets...),
 			redactSecrets(string(pushStderr), secrets...),
 			lfsPushError,
 		)
 	}
 
 	return nil
+}
+
+// logLFSDiagnostics writes a labeled, indented dump of the captured
+// stdout and stderr to the process's os.Stderr (with secrets redacted)
+// so that the Actions log reveals what git-lfs transferred for each
+// repository. It is a no-op when both outputs are empty.
+func logLFSDiagnostics(
+	writer *os.File, label string,
+	stdout, stderr []byte, secrets []string,
+) {
+	var combined string = string(stdout) + string(stderr)
+	var redacted string = redactSecrets(combined, secrets...)
+	var trimmed string = strings.TrimSpace(redacted)
+	if trimmed == "" {
+		return
+	}
+	var line string
+	for _, line = range strings.Split(trimmed, "\n") {
+		_, _ = fmt.Fprintf(writer, "    [%s] %s\n", label, line)
+	}
 }
 
 // lfsInstalled reports whether the git-lfs extension is available on the
@@ -275,33 +299,6 @@ func (client *Client) lfsInstalled() bool {
 		client.lfsAvailable = probeError == nil
 	})
 	return client.lfsAvailable
-}
-
-// lfsUsed reports whether the bare repository located at
-// repositoryDirectory references at least one Git LFS object reachable
-// from its refs. It must only be called when lfsInstalled reports true.
-func (client *Client) lfsUsed(
-	requestContext context.Context,
-	repositoryDirectory string,
-) (bool, error) {
-	var stdout []byte
-	var stderr []byte
-	var listError error
-	stdout, stderr, listError = runGit(
-		requestContext,
-		repositoryDirectory,
-		"lfs",
-		"ls-files",
-		"--all",
-	)
-	if listError != nil {
-		return false, fmt.Errorf(
-			"lfs ls-files: %s: %w",
-			string(stderr),
-			listError,
-		)
-	}
-	return len(bytes.TrimSpace(stdout)) > 0, nil
 }
 
 // runGit executes git with arguments in workingDirectory, honoring
